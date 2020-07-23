@@ -8,9 +8,9 @@ sys.path.append('E:/')
 import nicpy.nehMisc as nM
 
 class GridSearch:
-
+    
     def __init__(self, parameter_vectors, perc_limit = 0.5):
-
+        a=2
         # self.initial_logging()
         self.parameter_vectors = parameter_vectors
         self.parameters = list(parameter_vectors.keys())
