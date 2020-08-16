@@ -5,13 +5,13 @@ import numpy as np
 from fpdf import FPDF
 from pathlib import Path
 
-from definitions import poppler_bin_path, tesseract_exe_filepath
-pytesseract.pytesseract.tesseract_cmd = tesseract_exe_filepath
+from definitions import POPPLER_BIN_PATH, TESSERACT_EXE_FILEPATH
+pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE_FILEPATH
 
 def pdf_pages_to_images(PDF_file_path, image_directory, image_format, compression_factor = 1):
     PDF_directory = Path(PDF_file_path).parent
     PDF_name_folder = str(Path(PDF_file_path).stem)+'_page_images'
-    pages = convert_from_path(PDF_file_path, 500, poppler_path=poppler_bin_path)
+    pages = convert_from_path(PDF_file_path, 500, poppler_path=POPPLER_BIN_PATH)
 
     # Compress the images
     if compression_factor > 1:

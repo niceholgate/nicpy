@@ -2,9 +2,12 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-import nicpy.neh_misc as nm
+import nicpy.nic_misc as nm
+from nicpy.definitions import FFMPEG_FILEPATH
+import subprocess
+import os
 
-import multiprocessing as mp
+# import multiprocessing as mp
 
 
 def RGB_image_data_to_array(image_data, size):
@@ -207,12 +210,25 @@ def RGBA_image_colA_to_colB(image, colA, colB):
     image.putdata(new_data)
     return image
 
+# Calls ffmpeg to make a video from the frames (video goes to the frames directory by default)
+# Assumes that, for example, 541 frames are named as 'frame_00000.format' to 'frame_00541.format'
+def frames_to_video(frames_directory, video_name_with_format = 'video.avi', image_format = 'png', fps = 20):
 
-original_file_path = r'F:\Nick\Pictures\vivi\105040270_289965975381877_4524177727143924866_n.jpg'
-# original_file_path = r'F:\Nick\Pictures\birdsNbugs\5\46952284_10210251585804874_8255541787091795968_o.jpg'
-original_image = Image.open(original_file_path)
-# add_text_line_to_image(original_image, text='Hello there!', RGBA=(255,0,0,255), text_size = 120, text_center = (700, 1100), text_background_RGBA=(0,255,0,100), text_box_RGBA=(0,0,255,255), rot_degrees=-30)
-pre_pixelated = pixelate_mean_colour(original_image, 600)
-bucketed = RGB_colours_bucket(pre_pixelated, 200)
-pixelated = pixelate_mean_colour(bucketed, 100)
-pixelated.save('a.bmp')
+    # Delete the video file if it already exists
+    if (frames_directory / video_name_with_format).exists(): os.remove(str(frames_directory / video_name_with_format))
+    fps = str(int(fps))     # Floors non-int fps and converts to string as required
+    subprocess.run([FFMPEG_FILEPATH, '-framerate', fps,
+                    '-i', str(frames_directory/'frame_%05d.{}'.format(image_format)),
+                    str(frames_directory/video_name_with_format)])
+
+
+
+if __name__ == '__main__':
+    original_file_path = r'F:\Nick\Pictures\vivi\105040270_289965975381877_4524177727143924866_n.jpg'
+    # original_file_path = r'F:\Nick\Pictures\birdsNbugs\5\46952284_10210251585804874_8255541787091795968_o.jpg'
+    original_image = Image.open(original_file_path)
+    # add_text_line_to_image(original_image, text='Hello there!', RGBA=(255,0,0,255), text_size = 120, text_center = (700, 1100), text_background_RGBA=(0,255,0,100), text_box_RGBA=(0,0,255,255), rot_degrees=-30)
+    pre_pixelated = pixelate_mean_colour(original_image, 600)
+    bucketed = RGB_colours_bucket(pre_pixelated, 200)
+    pixelated = pixelate_mean_colour(bucketed, 100)
+    pixelated.save('a.bmp')

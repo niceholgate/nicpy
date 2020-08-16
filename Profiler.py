@@ -6,7 +6,7 @@ import numpy as np
 import pstats
 from datetime import datetime
 from SearchInFiles import SearchInFiles
-from nicpy.neh_misc import get_YYYYMMDDHHMMSS_string
+from nicpy.nic_misc import get_YYYYMMDDHHMMSS_string
 
 class Profiler:
                     # See cProfile docs online for more details

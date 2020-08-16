@@ -1,5 +1,5 @@
 from pathlib import Path
-import nicpy.neh_misc as nm
+import nicpy.nic_misc as nm
 from datetime import datetime
 import win32com.client
 from pptx import Presentation

@@ -8,7 +8,7 @@ import string
 from tika import parser
 from io import StringIO
 from bs4 import BeautifulSoup
-import nicpy.neh_misc as nm
+import nicpy.nic_misc as nm
 import nicpy.nic_pic as np
 
 
@@ -147,7 +147,8 @@ def remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowe
                                replacement_watermark_colour=(50,50,50,255),
                                replacement_watermark_text_center = (200, 200),
                                replacement_watermark_rotation_angle=0,
-                               output_file_path = ''):
+                               output_file_path = '',
+                               jpg_quality = 75):
 
     image_fps = OCR_utils.pdf_pages_to_images(PDF_file_path, str(Path(PDF_file_path).parent), 'BMP', compression_factor=compression_factor)
     mod_image_fps = []
@@ -193,7 +194,7 @@ def remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowe
                             show_result = False)
 
 
-        im.save(image_fp[:-4]+'_mod.jpg')
+        im.save(image_fp[:-4]+'_mod.jpg', quality=jpg_quality)
         mod_image_fps.append(image_fp[:-4]+'_mod.jpg')
 
     OCR_utils.images_to_pdf(mod_image_fps, output_file_path=output_file_path)
@@ -201,13 +202,13 @@ def remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowe
     if image_fps or mod_image_fps:
         for fp in image_fps+mod_image_fps: os.remove(fp)
 
-
-
-PDF_file_path = r'E:\nicpy\Projects\automate\data\pdf\Scour Limited Mock 2 - List of Exhibits and requirement - v1_0.pdf'
-to_black_upperbound = 110
-to_white_lowerbound = 160
-remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
-                           replacement_watermark='')
+# TODO: Need to save .jpg instead of huge .bmp files
+if __name__ == '__main__':
+    PDF_file_path = r'C:\Users\Nick\Desktop\wms\Scour Limited Mock 4 - Answer Pack - v1_0.pdf'
+    to_black_upperbound = 110
+    to_white_lowerbound = 160
+    remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
+                               replacement_watermark='', output_file_path=PDF_file_path[:-4]+'new.pdf', jpg_quality=60, compression_factor=2)
 
 # for doc in ['Scour Limited Mock 2 - List of Exhibits and requirement - v1_0']:
 #     for name in ['Jia Li', 'Qian Peng', 'Kai Yin', 'Yifan Li']:
