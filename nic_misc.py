@@ -6,6 +6,8 @@ import numpy as np
 import os
 from pathlib import Path
 import heapq
+import pyautogui
+import time
 from nicpy import nic_str
 # from android.storage import app_storage_path, primary_external_storage_path, secondary_external_storage_path
 
@@ -77,16 +79,24 @@ def same_shape(list_of_lists):
 
 
 
-def logging_setup(base_directory, today_date):
-    file_name = '{}_{}.log'.format(today_date, nic_str.get_YYYYMMDDHHMMSS_string(datetime.now(), '-', ';'))
-    stream_h = logging.StreamHandler()
-    mkdir_if_DNE(base_directory/'logs')
-    file_h = logging.FileHandler(str(base_directory/'logs'/file_name))
-    stream_h.setLevel('INFO')
-    logging.basicConfig(level=logging.DEBUG,
-                        format="%(asctime)s [%(threadName)s] [%(levelname)s]  %(message)s",
-                        handlers=[file_h, stream_h])
-
+def logging_setup(logger_name, base_directory, file_base):
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
+    # create file handler which logs even debug messages
+    file_name = '{}_{}.log'.format('ass_log', nic_str.get_YYYYMMDDHHMMSS_string(datetime.now(), '-', ';'))
+    fh = logging.FileHandler(str(base_directory / 'logs' / file_name))
+    fh.setLevel(logging.DEBUG)
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    # create formatter and add it to the handlers
+    formatter = logging.Formatter(u'[%(asctime)s] [%(threadName)s] [%(levelname)s] [%(lineno)d:%(filename)s(%(process)d)] - %(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+    # add the handlers to the logger
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
 
 def business_date_shift(business_date_reference, business_day_delta):
 
@@ -144,7 +154,26 @@ def distance(distance_type, coords1, coords2):
         deltas = [abs(coord1 - coord2) for coord1, coord2 in zip(coords1, coords2)]
         return sum(deltas)
 
-
+def look_busy():
+    time.sleep(5)
+    pixel_center = [int(el/2) for el in pyautogui.size()]
+    for i in range(10**100):
+        direction = int(np.random.rand()*4)
+        if direction == 0:
+            pyautogui.move(100+int(np.random.rand()*300), -40+80*np.random.rand(), duration=0.2+2*np.random.rand())              # right\
+            time.sleep(0.2+int(np.random.rand()*10))
+        if direction == 1:
+            pyautogui.move(-40+80*np.random.rand(), 100+int(np.random.rand()*300), duration=0.2+2*np.random.rand())              # down
+            time.sleep(0.2 + int(np.random.rand() * 10))
+        if direction == 2:
+            pyautogui.move(-(100+int(np.random.rand()*300)), -40+80*np.random.rand(), duration=0.2+2*np.random.rand())           # left
+            time.sleep(0.2 + int(np.random.rand() * 10))
+        if direction == 3:
+            pyautogui.move(-40+80*np.random.rand(), -(100 + int(np.random.rand() * 300)), duration=0.2+2*np.random.rand())   # up
+            time.sleep(0.2 + int(np.random.rand() * 10))
+        if abs(pyautogui.position()[0]-pyautogui.size()[0])<20 or abs(pyautogui.position()[1]-pyautogui.size()[1])<20:
+            pyautogui.moveTo(pixel_center[0], pixel_center[1], duration=1+2*np.random.rand()) # reset if close to screen edge
+            time.sleep(0.2 + int(np.random.rand() * 10))
 
 # def cut_paste_all_files(from_dir = '', to_dir = '', preset = ''):
 #

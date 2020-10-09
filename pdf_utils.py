@@ -204,27 +204,25 @@ def remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowe
 
 # TODO: Need to save .jpg instead of huge .bmp files
 if __name__ == '__main__':
-    PDF_file_path = r'C:\Users\Nick\Desktop\wms\Scour Limited Mock 4 - Answer Pack - v1_0.pdf'
-    to_black_upperbound = 110
-    to_white_lowerbound = 160
-    remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
-                               replacement_watermark='', output_file_path=PDF_file_path[:-4]+'new.pdf', jpg_quality=60, compression_factor=2)
+    # PDF_file_path = r'C:\Users\Nick\Desktop\wms\Scour Limited Mock 4 - Answer Pack - v1_0.pdf'
+    # to_black_upperbound = 110
+    # to_white_lowerbound = 160
+    # remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
+    #                            replacement_watermark='', output_file_path=PDF_file_path[:-4]+'new.pdf', jpg_quality=60, compression_factor=2)
 
-# for doc in ['Scour Limited Mock 2 - List of Exhibits and requirement - v1_0']:
-#     for name in ['Jia Li', 'Qian Peng', 'Kai Yin', 'Yifan Li']:
-#         ofp =  r'E:\nicpy\Projects\automate\data\pdf\{}_{}_small.pdf'.format(doc, name)
-#         PDF_file_path = r'E:\nicpy\Projects\automate\data\pdf\{}.pdf'.format(doc)
-#         to_black_upperbound = 110
-#         to_white_lowerbound = 160
-#         remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
-#                                    compression_factor = 2,
-#                                    replacement_watermark=name,
-#                                    replacement_watermark_font='Arial',
-#                                    replacement_watermark_text_size=90,
-#                                    replacement_watermark_colour=(100, 100, 100, 100),
-#                                    replacement_watermark_text_center=(1050, 1475),
-#                                    replacement_watermark_rotation_angle=45,
-#                                    output_file_path=ofp)
+    for doc in ['Mock 5 - Answer Pack - v1_0',
+                'Mock 5 - Exhibit 14 - v1_0',
+                'Mock 5 - Exhibits 15 to 18 - v1_0',
+                'Mock 5 - List of Exhs - v1_0',
+                'Mock 6 - Answer Pack - v1_0',
+                'Mock 6 - Exhibit 14 - v1_0',
+                'Mock 6 - Exhibits 15 to 18 - v1_0',
+                'Mock 6 - List of Exhibits and requirement - v1_0']:
+        PDF_file_path = r'C:\Users\Nick\Desktop\docs\{}.pdf'.format(doc)
+        to_black_upperbound = 110
+        to_white_lowerbound = 160
+        remove_greyscale_watermark(PDF_file_path, to_black_upperbound, to_white_lowerbound,
+                                   replacement_watermark='', output_file_path=PDF_file_path[:-4] + 'new.pdf', jpg_quality=60, compression_factor=2)
 
 # decode_pdf(r'E:\nicpy\Projects\automate\data\pdf\Scour Limited Mock 2 - Answer Pack - v1_0_Jia Li.pdf', r'E:\nicpy\Projects\automate\data\pdf',image_format='PNG')
 # if __name__=='__main__':
