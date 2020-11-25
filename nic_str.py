@@ -120,6 +120,7 @@ def count_text_occurrences(text, search_string, case_sensitive, whole_phrase_onl
     if get_line_numbers: return line_numbers
     return occurrences
 
+
 def _get_line_numbers(line_numbers, text, i, last_i, search_string):
     if not line_numbers:
         line_numbers = [text[:i].count('\n') + 1]
@@ -127,6 +128,7 @@ def _get_line_numbers(line_numbers, text, i, last_i, search_string):
         line_numbers.append(line_numbers[-1] + text[last_i + len(search_string) - 1:i].count('\n'))
     last_i = i
     return line_numbers, last_i
+
 
 def to_pascal_case(original_string):
     modified_string = original_string.replace('_', ' ')

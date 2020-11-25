@@ -4,4 +4,4 @@ FFMPEG_FILEPATH             = r'E:\dev\python_utils\ffmpeg\bin\ffmpeg.exe'
 OPENWEATHER_API_KEY         = 'ea012e6e870ba99606487430667ccef9'
 WOLFRAM_APP_ID              = 'X64GU5-W6ALLJHWTE'
 DATA_PERSIST_DIRECTORY      = r'E:\dev\nicpy\persisted_data'
-
+ETF_PORTFOLIO_FILEPATH      = r'F:\Nick\Misc\Finances\ETF performance and portfolio\ETF performance and portfolio.xlsx'

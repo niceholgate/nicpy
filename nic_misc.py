@@ -5,24 +5,14 @@ import pandas as pd
 import numpy as np
 import os
 from pathlib import Path
-import heapq
 import pyautogui
 import time
+import holidays
+import numbers
+import yfinance as yf
+from nic_webscrape import WeatherData
+
 from nicpy import nic_str
-# from android.storage import app_storage_path, primary_external_storage_path, secondary_external_storage_path
-
-class PriorityQueue:
-    def __init__(self):
-        self.elements = []
-
-    def empty(self):
-        return len(self.elements) == 0
-
-    def put(self, item, priority):
-        heapq.heappush(self.elements, (priority, item))
-
-    def get(self):
-        return heapq.heappop(self.elements)[1]
 
 
 # Creates a nested new directory
@@ -40,6 +30,7 @@ def mkdir_if_DNE(directory):
         ancestor.mkdir()
 
 
+# Exponential moving average
 def exponential_MA(datetimes, data, tau):
 
     datetimes, data = list(datetimes), list(data)
@@ -52,31 +43,20 @@ def exponential_MA(datetimes, data, tau):
     return smoothed
 
 
-# Check lengths/sizes of all the lists/arrays/dataframes in a list are the same
-def same_shape(list_of_lists):
-    if type(list_of_lists) != list: raise Exception('Must input a list of lists/arrays/DataFrames.')
-    if len(list_of_lists) < 2: raise Exception('Must input a list of multiple lists/arrays/DataFrames (can mix arrays with DataFrames, but not lists with the others).')
-    first_type = type(list_of_lists[0])
-    if first_type == list:
-        first_shape = len(list_of_lists[0])
-    elif first_type in [np.ndarray, pd.core.frame.DataFrame]:
-        first_shape = list_of_lists[0].shape
-        if len(first_shape) == 1: first_shape = (first_shape[0], 1)
-    else:
-        raise Exception('Can only check lists with other lists, or arrays/DataFrames with each other, but found a \'{}\'.'.format(type(first_type)))
+# Creates a DataFrame from a series of text files, with each file as a column
+def txt_vectors_to_df(txts_directory, separator_char):
+    files = os.listdir(str(txts_directory))
+    text_file_paths = [Path(txts_directory) / file for file in files if  # '~$' files are temporary Office files present when the main file is opened
+                             ((Path(txts_directory) / file).suffix == '.txt') and ('~$' not in str(Path(txts_directory) / file))]
+    data_dict = {}
+    for file_path in text_file_paths:
+        file = open(str(file_path), 'r')
+        data_name = file_path.stem
+        file_text = file.read()
+        data_dict[data_name] = file_text.split(separator_char)
+    data_df = pd.DataFrame(data_dict)
 
-    for el in list_of_lists[1:]:
-        if first_type == list:
-            if type(el) != list: raise Exception('Can only check lists with other lists, or arrays/DataFrames with each other.')
-            if len(el) != first_shape: return False
-        if first_type in [np.ndarray, pd.core.frame.DataFrame]:
-            if type(el) not in [np.ndarray, pd.core.frame.DataFrame]: raise Exception('Can only check lists with other lists, or arrays/DataFrames with each other.')
-            new_shape = el.shape
-            if len(new_shape) == 1: new_shape = (new_shape[0], 1)
-            if new_shape != first_shape: return False
-
-    return True
-
+    return data_df
 
 
 def logging_setup(logger_name, base_directory, file_base):
@@ -98,11 +78,19 @@ def logging_setup(logger_name, base_directory, file_base):
     logger.addHandler(ch)
     return logger
 
-def business_date_shift(business_date_reference, business_day_delta):
 
-    business_time = bt.BusinessTime(weekends=[5,6])
+# TODO: need to add holidays data control for more countries and states
+def business_date_shift(business_date_reference, business_day_delta, country_string):
 
-    # Check that business day reference is a date, a bussiness day, and business_day_delta is an integer
+    # Convert days delta to years delta to get approximate range of necessary holidays data
+    now_year = business_date_reference.year
+    years_delta = np.ceil(abs(business_day_delta/365))
+    years_list = list(range(now_year-years_delta, now_year+years_delta+1))
+    if country_string == 'US': country_holidays = holidays.US(years=years_list)
+
+    business_time = bt.BusinessTime(weekends=[5, 6], holidays=country_holidays)
+
+    # Check that business day reference is a date, a business day, and business_day_delta is an integer
     if not isinstance(business_date_reference, date):
         raise Exception('Reference must be a datetime.date object.')
     if not business_time.isbusinessday(business_date_reference):
@@ -120,25 +108,8 @@ def business_date_shift(business_date_reference, business_day_delta):
 
     return new_date
 
-def txt_vectors_to_df(txts_directory, separator_char):
-    files = os.listdir(str(txts_directory))
-    text_file_paths = [Path(txts_directory) / file for file in files if  # '~$' files are temporary Office files present when the main file is opened
-                             ((Path(txts_directory) / file).suffix == '.txt') and ('~$' not in str(Path(txts_directory) / file))]
-    data_dict = {}
-    for file_path in text_file_paths:
-        file = open(str(file_path), 'r')
-        data_name = file_path.stem
-        file_text = file.read()
-        data_dict[data_name] = file_text.split(separator_char)
-    data_df = pd.DataFrame(data_dict)
 
-    return data_df
 
-# Tests that an object is a list and that it only contains only the specified element type
-def is_list_of(test_element_type, test_list):
-    if not isinstance(test_list, list): return False
-    if not all([type(el) == test_element_type for el in test_list]): return False
-    return True
 
 def distance(distance_type, coords1, coords2):
     distance_types = ['euclidian', 'octile', 'manhattan']
@@ -154,10 +125,13 @@ def distance(distance_type, coords1, coords2):
         deltas = [abs(coord1 - coord2) for coord1, coord2 in zip(coords1, coords2)]
         return sum(deltas)
 
+
+# Moves the mouse forever, with a 5 second delay to permit selection of a new window etc. Cancel with ctrl+c.
 def look_busy():
     time.sleep(5)
     pixel_center = [int(el/2) for el in pyautogui.size()]
-    for i in range(10**100):
+    london_still_reeks = True
+    while london_still_reeks:
         direction = int(np.random.rand()*4)
         if direction == 0:
             pyautogui.move(100+int(np.random.rand()*300), -40+80*np.random.rand(), duration=0.2+2*np.random.rand())              # right\
@@ -175,6 +149,7 @@ def look_busy():
             pyautogui.moveTo(pixel_center[0], pixel_center[1], duration=1+2*np.random.rand()) # reset if close to screen edge
             time.sleep(0.2 + int(np.random.rand() * 10))
 
+
 # def cut_paste_all_files(from_dir = '', to_dir = '', preset = ''):
 #
 #     # If known preset specified, set the from_dir and to_dir accordingly
@@ -184,6 +159,51 @@ def look_busy():
 #     print(secondary_external_storage_path)
 #     # p = Path('This PC\Moto G (5)\Samsung SD card\DCIM\Camera')
 #     # Check
-#
-#
-# cut_paste_all_files()
+
+# Easily and succinctly exclude combinations of conditions from a DataFrame
+# exclude_combos is a list of dicts, each being a combo to exclude
+def df_exclude_combos(df, exclude_combos):
+    filter_combos = pd.Series([False]*df.shape[0], index=df.index)
+    for combo in exclude_combos:
+        filter_this_combo = pd.Series([True]*df.shape[0], index=df.index)
+        for key, value in combo.items():
+            if key not in df.columns:
+                raise Exception('Column {} is not in the DataFrame'.format(key))
+
+            # If list of length 2 check for >, <, <=, >= operators in first column
+            if isinstance(value, list):
+                if len(value) == 2:
+                    if value[0] == '>' and isinstance(value[1], numbers.Number):
+                        filter_this_combo = filter_this_combo * (df[key] > value[1])
+                    elif value[0] == '<':
+                        filter_this_combo = filter_this_combo * (df[key] < value[1])
+                    elif value[0] == '<=':
+                        filter_this_combo = filter_this_combo * (df[key] <= value[1])
+                    elif value[0] == '>=':
+                        filter_this_combo = filter_this_combo * (df[key] >= value[1])
+                    else:
+                        filter_this_combo = filter_this_combo * (df[key] == value[1])
+            # If NaN check isnull
+            elif pd.isnull(value):
+                filter_this_combo = filter_this_combo * (df[key].isnull())
+            # All others checks equality
+            else:
+                filter_this_combo = filter_this_combo * (df[key] == value)
+        # OR operation - cumulative exclusions
+        filter_combos = filter_combos + filter_this_combo
+    return df[~filter_combos]
+
+if __name__ == '__main__':
+    # Testing df_exclude_combos()
+    df_numerical = yf.Ticker("MSFT").history()
+    df_mixed = WeatherData('Perth').processed_data
+    # exclude_combos = [{'WindDeg': 250, 'Weather': 'ClearSky'}]
+    # df_excluded = df_exclude_combos(df_mixed, exclude_combos)
+    # other_df_excluded = df_mixed[~((df_mixed['WindDeg'] == 250) & (df_mixed['Weather'] == 'ClearSky'))]
+    df_mixed['DateTime'][4] = float('NaN')
+    exclude_combos_with_range = [{'WindDeg': ['<=', 200]},
+                                 {'Weather': 'ClearSky', 'Pressure': ['<', 1010]},
+                                 {'DateTime': float('NaN')}]
+    df_excluded = df_exclude_combos(df_mixed, exclude_combos_with_range)
+    a=2
+

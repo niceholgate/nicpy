@@ -1,16 +1,12 @@
 import numpy as np
 import logging
 from datetime import datetime, date
-import functions.strategy.similitudes as sim
-import functions.analysis.outcome_analysis as o_a
-import sys
-sys.path.append('E:/')
-import nicpy.nehMisc as nM
 
+# TODO: make more generic alongside usage with algo
 class GridSearch:
     
     def __init__(self, parameter_vectors, perc_limit = 0.5):
-        a=2
+
         # self.initial_logging()
         self.parameter_vectors = parameter_vectors
         self.parameters = list(parameter_vectors.keys())
@@ -193,7 +189,7 @@ class GridSearch:
 
             # If the parameter is changing slowly or not at all, can fix its value for subsequent grids
             if len(self.auto_optimised_parameter_percent_changes)>1 and len(self.parameter_vectors[parameter])>1:
-                if self.auto_optimised_parameter_percent_changes[-1][parameter]<self.perc_limit and self.auto_optimised_parameter_percent_changes[-2][paramter]<self.perc_limit:
+                if self.auto_optimised_parameter_percent_changes[-1][parameter]<self.perc_limit and self.auto_optimised_parameter_percent_changes[-2][parameter]<self.perc_limit:
                     logging.info('Parameter \'{}\' changed by less than {}% for two consecutive cycles, so it was fixed after cycle {} of {} total '
                                  'auto_optimise cycles.'.format(parameter, self.perc_limit, this_cycle-1, total_cycles))
                     self.paramter_vectors[parameter] = np.array([self.auto_optimised_extrema_param_sets[-1][parameter]])

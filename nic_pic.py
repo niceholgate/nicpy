@@ -9,7 +9,7 @@ import os
 
 # import multiprocessing as mp
 
-
+# Convert Image.getdata() data to RGB array
 def RGB_image_data_to_array(image_data, size):
 
     r, g, b = [el[0] for el in image_data], [el[1] for el in image_data], [el[2] for el in image_data]
@@ -20,6 +20,8 @@ def RGB_image_data_to_array(image_data, size):
     return np.array([data_array_r, data_array_g, data_array_b])
 
 
+# Pixelation based on mean colour
+# TODO: add comments
 def pixelate_mean_colour(original_image, new_pixels_x):
     data = original_image.getdata()
     original_size = data.size
@@ -70,8 +72,8 @@ def pixelate_mean_colour(original_image, new_pixels_x):
     return new_image
 
 
-def pixelate_corner_colour(original_image):
-    a=2
+# def pixelate_corner_colour(original_image):
+#     a=2
 
 # def RGB_combine_similar_colour_regions(original_image, colour_diff_metric_tol, search_method = 'LRUD'):
 #
@@ -101,6 +103,8 @@ def pixelate_corner_colour(original_image):
 #         if filled_map[:, first_unfinished_row].all():
 #             first_unfinished_row = y+1
 
+# Reduce unique colours by bucketing them
+# TODO: add comments
 def RGB_colours_bucket(original_image, div_fac):
 
     # Convert image data to a 3D array of RGB values
@@ -143,6 +147,7 @@ def RGB_colours_bucket(original_image, div_fac):
 
     return recon
 
+# TODO: add comments
 def add_text_line_to_image(original_image, text, text_center,
                             text_size=80,
                             text_box_pixel_width = 5,
@@ -199,6 +204,7 @@ def add_text_line_to_image(original_image, text, text_center,
     return new_image_fp, base
 
 
+# Select a colour A and change it to colour B throughout whole image
 def RGBA_image_colA_to_colB(image, colA, colB):
     data = image.getdata()
     new_data = []
@@ -209,6 +215,7 @@ def RGBA_image_colA_to_colB(image, colA, colB):
             new_data.append(item)
     image.putdata(new_data)
     return image
+
 
 # Calls ffmpeg to make a video from the frames (video goes to the frames directory by default)
 # Assumes that, for example, 541 frames are named as 'frame_00000.format' to 'frame_00541.format'
@@ -224,6 +231,8 @@ def frames_to_video(frames_directory, video_name_with_format = 'video.avi', imag
 
 
 if __name__ == '__main__':
+
+    # Colour bucketing and pixelation example
     original_file_path = r'F:\Nick\Pictures\vivi\105040270_289965975381877_4524177727143924866_n.jpg'
     # original_file_path = r'F:\Nick\Pictures\birdsNbugs\5\46952284_10210251585804874_8255541787091795968_o.jpg'
     original_image = Image.open(original_file_path)

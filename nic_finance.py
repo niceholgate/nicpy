@@ -6,9 +6,10 @@ from nicpy.CacheDict import CacheDict
 from nicpy.nic_webscrape import get_check_country_code
 import openpyxl
 from datetime import datetime
+from definitions import ETF_PORTFOLIO_FILEPATH
 
 
-
+# Get latest pricers for a list of tickers from yfinance
 def get_last_prices(tickers):
     # TODO: yf_tickers for non-ASX holdings?
     yf_tickers = [el + '.AX' for el in tickers]
@@ -23,9 +24,10 @@ def get_last_prices(tickers):
     return last_prices
 
 
+# Update the prices in a spreadsheet tracking an ETF portfolio
 def update_ETF_spreadsheet_prices():
     # Open the first sheet
-    file_path = r'F:\Nick\Misc\Finances\ETF performance and portfolio\ETF performance and portfolio.xlsx'
+    file_path = ETF_PORTFOLIO_FILEPATH
     wb = openpyxl.load_workbook(file_path)
     sheet = wb[wb.sheetnames[0]]
 
@@ -46,6 +48,8 @@ def update_ETF_spreadsheet_prices():
     sheet.cell(row=4, column=21).value = datetime.now().strftime('%m/%d/%Y')
     wb.save(file_path)
 
+
+# Reads and formats some manually downloaded ETF holdings data files
 def read_format_ETF_holdings(csv_directory):
     csv_directory = Path(csv_directory)
     holdings = {}
@@ -105,6 +109,7 @@ def read_format_ETF_holdings(csv_directory):
 def format_vanguard(el_str):
     return el_str.replace('"', '').replace('=', '').replace('%', '').replace('$', '')
 
+# Maps a wide range of keywords to more general corporate sectors
 def get_general_sector(specific_sector):
     general_sectors_with_keywords = {
         'Real Estate'               : ['REIT', 'REITs', 'real estate'],
@@ -124,6 +129,7 @@ def get_general_sector(specific_sector):
             if keyword.upper() in specific_sector.upper(): return gs
     return 'Other'
 
+# Given loaded and formatted holdings data, calculate and save a each the sector and country weights for a portfolio of ETFs
 def export_holdings_sector_country_weights(holdings):
     sector_weights, country_weights = {ticker: {} for ticker in holdings.keys()}, {ticker: {} for ticker in holdings.keys()}
     for ticker in holdings.keys():
