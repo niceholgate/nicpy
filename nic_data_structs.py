@@ -150,9 +150,29 @@ class RowMatcher:
         self.partial_matches[mismatch_col], self.unmatched_df1, self.unmatched_df2 = \
             self.get_matches(self.unmatched_df1, self.unmatched_df2, shared_cols_excl, self.suffixes)
 
+        # Check if any of the remaining mismatches are actually partial matches when specified tolerances on the numeric fields are considered
+        for mismatch_col2, tol_val2 in self.tolerances.items():
+            # Reduce to common columns except mismatch_col
+            shared_cols_excl = [col for col in self.shared_cols if col not in [mismatch_col, mismatch_col2]]
+
+            # Find which rows have started to match if ignoring mismatch_col
+            partial_matches = self.get_matches(self.unmatched_df1, self.unmatched_df2, shared_cols_excl, self.suffixes)[0]
+
+            # If for any partial_matches the two values of mismatch_col are sufficiently close, add them to the full_matches and remove them from the unmatched
+            if partial_matches is not None:
+                if not partial_matches.empty:
+                    partial_matches['ERROR'] = partial_matches.apply(lambda x: abs(x[mismatch_col2 + self.suffixes[0]] - x[mismatch_col2 + self.suffixes[1]]), axis=1)
+                    new_partial_matches_1 = partial_matches[partial_matches['ERROR'] < tol_val2].rename(columns={mismatch_col2 + self.suffixes[0]: mismatch_col2})
+                    new_partial_matches_2 = partial_matches[partial_matches['ERROR'] < tol_val2].rename(columns={mismatch_col2 + self.suffixes[1]: mismatch_col2})
+                    if not new_partial_matches_1.empty:
+                        self.partial_matches[mismatch_col] = pd.concat([self.partial_matches[mismatch_col], new_partial_matches_1[self.partial_matches[mismatch_col].columns]]).reset_index(drop=True)
+                        self.unmatched_df1 = self.keep_right_df_uniques_with_duplicates(new_partial_matches_1, self.unmatched_df1)
+                        self.unmatched_df2 = self.keep_right_df_uniques_with_duplicates(new_partial_matches_2, self.unmatched_df2)
+
         # Ensure null DataFrame has same columns as a non-empty one would
         if self.partial_matches[mismatch_col] is None:
             self.partial_matches[mismatch_col] = pd.DataFrame(columns=ordered_cols)
+
 
     @staticmethod
     def get_matches(df1, df2, on, suffixes):
@@ -296,9 +316,9 @@ def long_func(n):
 # matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Price': 0.001})
 # matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
 
-df1 = pd.read_excel('match_test2a.xlsx')
-df2 = pd.read_excel('match_test2b.xlsx')
-matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Price': 0.01})
+df1 = pd.read_excel('match_test3a.xlsx')
+df2 = pd.read_excel('match_test3b.xlsx')
+matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Balance': 0.05, 'Interest Earned': 0.05})
 matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
 
 
