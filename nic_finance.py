@@ -2,14 +2,36 @@ import yfinance as yf
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from nicpy.CacheDict import CacheDict
+from nicpy.nic_data_structs import CacheDict
 from nicpy.nic_webscrape import get_check_country_code
 import openpyxl
 from datetime import datetime
 from definitions import ETF_PORTFOLIO_FILEPATH
 
+# use
+# "period"
+# instead
+# of
+# start / end
+# valid periods: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max
+# (optional, default is '1mo')
+# period = "ytd",
 
+# fetch data by interval (including intraday if period < 60 days)
+# valid intervals: 1m,2m,5m,15m,30m,60m,90m,1h,1d,5d,1wk,1mo,3mo
+# (optional, default is '1d')
+# interval = "1m",
+
+# group by ticker (to access via data['SPY'])
+# (optional, default is 'column')
+# group_by = 'ticker',
+
+# TODO: check speed of updates when markets are open, comparing yfinance and yahoo_fin packages
 # Get latest pricers for a list of tickers from yfinance
+# from yahoo_fin import stock_info
+# stock_info.get_live_price('VTS.AX')
+# http://theautomatic.net/yahoo_fin-documentation/
+
 def get_last_prices(tickers):
     # TODO: yf_tickers for non-ASX holdings?
     yf_tickers = [el + '.AX' for el in tickers]
@@ -18,9 +40,10 @@ def get_last_prices(tickers):
     for ticker, yf_ticker in zip(tickers, yf_tickers):
         closes = data[yf_ticker]['Close']
         remove_nans = closes[~np.isnan(closes)]
-        last_price = remove_nans.iloc[-1]
-        last_price_time = remove_nans.index[-1]
-        last_prices[ticker] = (last_price_time, last_price)
+        if remove_nans.shape[0] > 0:
+            last_price = remove_nans.iloc[-1]
+            last_price_time = remove_nans.index[-1]
+            last_prices[ticker] = (last_price_time, last_price)
     return last_prices
 
 
@@ -44,8 +67,9 @@ def update_ETF_spreadsheet_prices():
 
     # Put the prices into the spreadsheet and update the today date
     for i, ticker in enumerate(tickers):
-        sheet.cell(row=5+i, column=4).value = last_prices[ticker][1]
-    sheet.cell(row=4, column=21).value = datetime.now().strftime('%m/%d/%Y')
+        if ticker in last_prices.keys():
+            sheet.cell(row=5+i, column=4).value = last_prices[ticker][1]
+    sheet.cell(row=4, column=29).value = datetime.now().strftime('%m/%d/%Y')
     wb.save(file_path)
 
 

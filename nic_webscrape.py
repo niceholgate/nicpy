@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as ptc
 import nic_str as ns
 import nic_plot
-from CacheDict import CacheDict
+from nicpy.nic_data_structs import CacheDict
 from pathlib import Path
 
 # Gets weather data for past 5 days as well as

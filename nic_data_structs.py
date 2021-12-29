@@ -5,12 +5,10 @@ import pickle, heapq, numbers
 import numpy as np
 import pandas as pd
 
-from definitions import DATA_PERSIST_DIRECTORY
-
 
 class CacheDict:
 
-    def __init__(self, func, initial_keys=[], persist_filename = '', persist_lifetime_hours=None):
+    def __init__(self, func, persist_directory=None, persist_filename = None, initial_keys=(), persist_lifetime_hours=10**10):
 
         self.func = func
         self.func_name = str(func).split(' ')[1]
@@ -18,29 +16,35 @@ class CacheDict:
         self.cache_dict = {}
 
         # If the persist_filename exists, load it
-        self.persist_filepath = Path(DATA_PERSIST_DIRECTORY)/persist_filename
-        if Path(self.persist_filepath).exists():
-            persist_load = pickle.load(open(self.persist_filepath, 'rb'))
-            persist_CacheDict = persist_load['CacheDict']
-            save_datetime = persist_load['save_datetime']
-            # If the save_datetime is more than persist_lifetime_hours ago, and the func details match, load the old cache_dict
-            if (datetime.now()-save_datetime).total_seconds()/60/60 < persist_lifetime_hours:
-                if persist_CacheDict.func == self.func and persist_CacheDict.n_func_args == self.n_func_args and persist_CacheDict.func_name == self.func_name:
-                    self.cache_dict = persist_CacheDict.cache_dict
+        self.persist_filepath = None
+        if persist_filename and persist_directory:
+            self.persist_filepath = Path(persist_directory) / persist_filename
+            if Path(self.persist_filepath).exists():
 
-        for key in initial_keys:
-            self.check_key(key)
-            key_str = tuple(str(el) for el in key)
-            self.cache_dict[key_str] = self.func(*key)
+                persist_load = pickle.load(open(str(self.persist_filepath), 'rb'))
+                persist_CacheDict = persist_load['CacheDict']
+                save_datetime = persist_load['save_datetime']
+                # If the save_datetime is less than persist_lifetime_hours ago, and the func details match, load the old cache_dict
+                if (datetime.now()-save_datetime).total_seconds()/60/60 < persist_lifetime_hours:
+                    if persist_CacheDict.func == self.func and persist_CacheDict.n_func_args == self.n_func_args and persist_CacheDict.func_name == self.func_name:
+                        self.cache_dict = persist_CacheDict.cache_dict
 
-    def check_key(self, key):
+        if len(initial_keys) > 0:
+            for key in initial_keys:
+                self._check_key(key)
+                key_str = tuple(str(el) for el in key)
+                self.cache_dict[key_str] = self.func(*key)
+            if self.persist_filepath:
+                pickle.dump({'CacheDict': self, 'save_datetime': datetime.now()}, open(str(self.persist_filepath), 'wb'))
+
+    def _check_key(self, key):
         er = 'All keys must be tuples of length equal to number of parameters in the' \
              'function whose result is being cached.\n For {} this is {} arguments.'.format(self.func_name, self.n_func_args)
         if not isinstance(key, tuple): raise Exception(er)
         elif len(key) != self.n_func_args: raise Exception(er)
 
     def get_key_value(self, key):
-        self.check_key(key)
+        self._check_key(key)
         key_str = tuple(str(el) for el in key)
         if key_str in self.cache_dict.keys():
             return self.cache_dict[key_str]
@@ -48,20 +52,29 @@ class CacheDict:
             self.cache_dict[key_str] = self.func(*key)
             # Update the persisted CacheDict if an update occurs
             if self.persist_filepath:
-                pickle.dump({'CacheDict':self, 'save_datetime':datetime.now()}, open(self.persist_filepath, 'wb'))
+                # First create the directory if it doesn't yet exist
+                if not self.persist_filepath.parent.exists():
+                    self.persist_filepath.parent.mkdir()
+                pickle.dump({'CacheDict': self, 'save_datetime': datetime.now()}, open(str(self.persist_filepath), 'wb'))
             return self.cache_dict[key_str]
 
     def force_key_value(self, key, value):
-        self.check_key(key)
+        self._check_key(key)
         if key in self.cache_dict.keys():
             raise Exception('\'{}\' is already a key in the CacheDict; must explicitly delete it first with delete_key method'.format(key))
         else:
             self.cache_dict[key] = value
+            # Update the persisted CacheDict if an update occurs
+            if self.persist_filepath:
+                pickle.dump({'CacheDict': self, 'save_datetime': datetime.now()}, open(str(self.persist_filepath), 'wb'))
 
     def delete_key(self, key):
-        self.check_key(key)
+        self._check_key(key)
         if key in self.cache_dict.keys():
             del self.cache_dict[key]
+            # Update the persisted CacheDict if an update occurs
+            if self.persist_filepath:
+                pickle.dump({'CacheDict': self, 'save_datetime': datetime.now()}, open(str(self.persist_filepath), 'wb'))
         else:
             raise Exception('\'{}\' is not already in the cache.'.format(key))
 
@@ -299,16 +312,18 @@ def long_func(n):
     return result
 
 
+# # Example showing speedup due to caching
 # if __name__=='__main__':
-    # # Example showing speedup due to caching with CacheDict
-    # long_func_cache = CacheDict(long_func)
-    # t1=datetime.now()
-    # a=long_func_cache.get_key_value((1000000,))
-    # dt1=(datetime.now()-t1).total_seconds()
-    #
-    # t2 = datetime.now()
-    # b=long_func_cache.get_key_value((1000000,))
-    # dt2 = (datetime.now() - t2).total_seconds()
+#     long_func_cache = CacheDict(long_func, persist_filename='thing.dat', persist_lifetime_hours=1)
+#     t1=datetime.now()
+#     a=long_func_cache.get_key_value((1000000,))
+#     dt1=(datetime.now()-t1).total_seconds()
+#
+#     t2 = datetime.now()
+#     b=long_func_cache.get_key_value((1000000,))
+#     dt2 = (datetime.now() - t2).total_seconds()
+#
+#     # c = long_func_cache.get_key_value((140000,))
 
 # Example showing matching with DataFrames
 # df1 = pd.read_excel('match_test1a.xlsx')
@@ -316,9 +331,10 @@ def long_func(n):
 # matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Price': 0.001})
 # matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
 
-df1 = pd.read_excel('match_test3a.xlsx')
-df2 = pd.read_excel('match_test3b.xlsx')
-matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Balance': 0.05, 'Interest Earned': 0.05})
-matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
+if __name__=='__main__':
+    df1 = pd.read_excel('match_test3a.xlsx')
+    df2 = pd.read_excel('match_test3b.xlsx')
+    matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Balance': 0.05, 'Interest Earned': 0.05})
+    matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
 
 

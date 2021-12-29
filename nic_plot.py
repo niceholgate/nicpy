@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import math as m
 
+
+
 def nic_plot2d(datas, pd, grid, xlabel, ylabel, title, axes, sub, size, leg_labels, ax):
     # Don't generate a new figure if it's being called from neh_subplot
     if sub != 1: fig, ax = plt.subplots(figsize=size)
