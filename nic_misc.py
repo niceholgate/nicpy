@@ -9,11 +9,11 @@ import pyautogui
 import time
 import holidays
 import numbers
-# import yfinance as yf
-# from nic_webscrape import WeatherData
 
 from nicpy import nic_str
 
+# TODO: nicpy testing
+# TODO: nicpy type hints
 
 # Creates a nested new directory
 def mkdir_if_DNE(directory):
@@ -164,6 +164,12 @@ def look_busy():
 # Easily and succinctly exclude combinations of conditions from a DataFrame
 # exclude_combos is a list of dicts, each being a combo to exclude
 def df_exclude_combos(df, exclude_combos):
+    """
+    Easily and succinctly exclude combinations of conditions from a DataFrame.
+    :param df: DataFrame
+    :param exclude_combos: a list of dicts, each being a combo to exclude
+    :return: DataFrame without the specified rows
+    """
     filter_combos = pd.Series([False]*df.shape[0], index=df.index)
     for combo in exclude_combos:
         filter_this_combo = pd.Series([True]*df.shape[0], index=df.index)
@@ -195,7 +201,8 @@ def df_exclude_combos(df, exclude_combos):
     return df[~filter_combos]
 
 
-# For a DataFrame assumed to be pre-sorted by the given column, return the row index with the greatest value in that column but lower than specified value
+# For a DataFrame assumed to be pre-sorted by the given column, return the row index with the greatest value in that
+# column but lower than specified value.
 # e.g. for getting the most recent data as of 'now' in a historical time series
 # lowest_idx is an index before which the greatest value is already known not to be
 def df_latest_row(df: pd.DataFrame, column: str, less_than_value, lowest_idx=None):
@@ -203,9 +210,9 @@ def df_latest_row(df: pd.DataFrame, column: str, less_than_value, lowest_idx=Non
     # If the first idx is unavailable or has value actually >= less than value, error
     if lowest_idx:
         if lowest_idx > df.shape[0]-1:
-            raise Exception('Bad lowest_idx')
+            raise Exception('Bad lowest_idx - out of bounds.')
         if df[column].iat[lowest_idx] >= less_than_value:
-            raise Exception('Bad lowest_idx')
+            raise Exception('Bad lowest_idx - value >= less_than_value.')
 
     # If df is empty, return None
     if df.empty:
@@ -231,26 +238,4 @@ def same_weekend(dt1, dt2):
         if abs(dt1-dt2) < timedelta(days=2):
             return True
     return False
-
-if __name__ == '__main__':
-
-    # Testing df_latest_row()
-    df = pd.DataFrame({'Time': [datetime(2020,10,11), datetime(2020,10,13), datetime(2020,10,19), datetime(2020,10,21)], 'Value': [6,2,4,2]})
-    idx1 = df_latest_row(df, 'Time', datetime(2020, 10, 21))
-    idx2 = df_latest_row(df, 'Time', datetime(2020, 10, 21), 1)
-    idx3 = df_latest_row(df, 'Time', datetime(2020, 10, 19), 2)
-    idx4 = df_latest_row(df, 'Time', datetime(2020, 10, 21), 3)
-    a=2
-    # # Testing df_exclude_combos()
-    # df_numerical = yf.Ticker("MSFT").history()
-    # df_mixed = WeatherData('Perth').processed_data
-    # # exclude_combos = [{'WindDeg': 250, 'Weather': 'ClearSky'}]
-    # # df_excluded = df_exclude_combos(df_mixed, exclude_combos)
-    # # other_df_excluded = df_mixed[~((df_mixed['WindDeg'] == 250) & (df_mixed['Weather'] == 'ClearSky'))]
-    # df_mixed['DateTime'][4] = float('NaN')
-    # exclude_combos_with_range = [{'WindDeg': ['<=', 200]},
-    #                              {'Weather': 'ClearSky', 'Pressure': ['<', 1010]},
-    #                              {'DateTime': float('NaN')}]
-    # df_excluded = df_exclude_combos(df_mixed, exclude_combos_with_range)
-    # a=2
 

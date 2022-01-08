@@ -493,7 +493,7 @@ def get_check_country_code(country_or_code, bespoke_code_edits={}):
     country_codes_df = country_code_cache_dict.get_key_value(('ISO_3166-1_alpha-2',[2],False))['2']
 
     # Check the table
-    expected_cols = ['CODE', 'COUNTRY NAME (USING TITLE CASE)', 'YEAR', 'CCTLD', 'ISO 3166-2', 'NOTES']
+    expected_cols = ['CODE', 'COUNTRY NAME (USING TITLE CASE)', 'YEAR', 'CCTLD', 'NOTES']
     for col in expected_cols:
         if col not in country_codes_df.columns:
             raise Exception('Unexpected country codes reference table retrieved from Wikipedia.')

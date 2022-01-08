@@ -46,7 +46,6 @@ def get_last_prices(tickers):
             last_prices[ticker] = (last_price_time, last_price)
     return last_prices
 
-
 # Update the prices in a spreadsheet tracking an ETF portfolio
 def update_ETF_spreadsheet_prices():
     # Open the first sheet

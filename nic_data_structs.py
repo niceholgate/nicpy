@@ -312,18 +312,18 @@ def long_func(n):
     return result
 
 
-# # Example showing speedup due to caching
-# if __name__=='__main__':
-#     long_func_cache = CacheDict(long_func, persist_filename='thing.dat', persist_lifetime_hours=1)
-#     t1=datetime.now()
-#     a=long_func_cache.get_key_value((1000000,))
-#     dt1=(datetime.now()-t1).total_seconds()
-#
-#     t2 = datetime.now()
-#     b=long_func_cache.get_key_value((1000000,))
-#     dt2 = (datetime.now() - t2).total_seconds()
-#
-#     # c = long_func_cache.get_key_value((140000,))
+# Example showing speedup due to caching
+if __name__=='__main__':
+    long_func_cache = CacheDict(long_func, persist_filename='thing.dat', persist_lifetime_hours=1)
+    t1=datetime.now()
+    a=long_func_cache.get_key_value((1000000,))
+    dt1=(datetime.now()-t1).total_seconds()
+
+    t2 = datetime.now()
+    b=long_func_cache.get_key_value((1000000,))
+    dt2 = (datetime.now() - t2).total_seconds()
+
+    # c = long_func_cache.get_key_value((140000,))
 
 # Example showing matching with DataFrames
 # df1 = pd.read_excel('match_test1a.xlsx')
@@ -331,10 +331,10 @@ def long_func(n):
 # matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Price': 0.001})
 # matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
 
-if __name__=='__main__':
-    df1 = pd.read_excel('match_test3a.xlsx')
-    df2 = pd.read_excel('match_test3b.xlsx')
-    matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Balance': 0.05, 'Interest Earned': 0.05})
-    matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
-
+# if __name__=='__main__':
+#     df1 = pd.read_excel('match_test3a.xlsx')
+#     df2 = pd.read_excel('match_test3b.xlsx')
+#     matcher = RowMatcher(df1, df2, df1_name='one', df2_name='two', tolerances={'Balance': 0.05, 'Interest Earned': 0.05})
+#     matcher2 = RowMatcher(df1, df2, df1_name='one', df2_name='two')
+#
 
