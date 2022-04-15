@@ -12,13 +12,15 @@ import numbers
 
 from nicpy import nic_str
 
-# TODO: nicpy testing
-# TODO: nicpy type hints
-
-# Creates a nested new directory
 def mkdir_if_DNE(directory):
+    """
+    Creates a new directory (lowest level all the way up to final nested folder).
+    :param directory: pathlib.Path object representing new directory
+    :return: None
+    """
 
-    if not isinstance(directory, Path): raise Exception('Input should be a pathlib.Path object.')
+    if not isinstance(directory, Path):
+        raise Exception('Input should be a pathlib.Path object.')
 
     folders_to_create = []
     ancestor = directory
@@ -29,36 +31,63 @@ def mkdir_if_DNE(directory):
         ancestor = ancestor/folder
         ancestor.mkdir()
 
-
-# Exponential moving average
 def exponential_MA(datetimes, data, tau):
+    """
+    Exponential moving average.
+    :param datetimes: Datetimes
+    :param data: Numerical data to smooth
+    :param tau: Smoothing parameter
+    :return:
+    """
 
+    if tau <= 0:
+        raise Exception('tau smoothing parameter must be positive.')
     datetimes, data = list(datetimes), list(data)
-    if len(datetimes) != len(data): raise Exception('Must input congruent datetimes and data vectors.')
+    if len(datetimes) != len(data):
+        raise Exception('Must input equal length datetimes and data vectors.')
     smoothed = [data[0]]
     for i in range(1, len(datetimes)):
-        w = np.exp(-(datetimes[i]-datetimes[i-1]).total_seconds()/60/60/24/tau)
+        time_delta_seconds = (datetimes[i]-datetimes[i-1]).total_seconds()
+        if time_delta_seconds <= 0:
+            raise Exception('Datetimes must be strictly increasing.')
+        w = np.exp(-time_delta_seconds/60/60/24/tau)
         smoothed.append(w*smoothed[-1]+(1-w)*data[i])
 
     return smoothed
 
-
-# Creates a DataFrame from a series of text files, with each file as a column
-def txt_vectors_to_df(txts_directory, separator_char):
+def txt_vectors_to_df(txts_directory, separator_char, ignore_empty=False):
+    """
+    # Creates a DataFrame from a series of text files, with each file as a column.
+    :param txts_directory: Directory in which to search for .txt files
+    :param separator_char: Value separation character e.g. ',' , '/' , ';'
+    :param ignore_empty: Exclude empty values found in the .txt lists
+    :return:
+    """
     files = os.listdir(str(txts_directory))
     text_file_paths = [Path(txts_directory) / file for file in files if  # '~$' files are temporary Office files present when the main file is opened
                              ((Path(txts_directory) / file).suffix == '.txt') and ('~$' not in str(Path(txts_directory) / file))]
     data_dict = {}
+    max_len = 0
     for file_path in text_file_paths:
         file = open(str(file_path), 'r')
         data_name = file_path.stem
         file_text = file.read()
         data_dict[data_name] = file_text.split(separator_char)
-    data_df = pd.DataFrame(data_dict)
+        if ignore_empty:
+            data_dict[data_name] = [el for el in data_dict[data_name] if el != '']
+        if len(data_dict[data_name]) > max_len:
+            max_len = len(data_dict[data_name])
 
-    return data_df
+    # Append empty strings to any lists which are shorter than the max_len
+    for k, v in data_dict.items():
+        this_len = len(v)
+        if max_len - this_len > 0:
+            for _ in range(max_len - this_len):
+                v.append('')
 
+    return pd.DataFrame(data_dict)
 
+# TODO: test this, move to a logging helpers file?
 def logging_setup(logger_name, base_directory, file_base):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
@@ -79,14 +108,22 @@ def logging_setup(logger_name, base_directory, file_base):
     return logger
 
 
-# TODO: need to add holidays data control for more countries and states
 def business_date_shift(business_date_reference, business_day_delta, country_string):
 
     # Convert days delta to years delta to get approximate range of necessary holidays data
     now_year = business_date_reference.year
-    years_delta = np.ceil(abs(business_day_delta/365))
+    years_delta = int(np.ceil(abs(business_day_delta/365)))
     years_list = list(range(now_year-years_delta, now_year+years_delta+1))
-    if country_string == 'US': country_holidays = holidays.US(years=years_list)
+
+    # TODO: need to add holidays data control for more countries and states
+    if country_string == 'AU':
+        country_holidays = holidays.AU(years=years_list)
+    elif country_string == 'UK':
+        country_holidays = holidays.UK(years=years_list)
+    elif country_string == 'US':
+        country_holidays = holidays.US(years=years_list)
+    else:
+        raise Exception('Unknown country string, cannot get holiday data.')
 
     business_time = bt.BusinessTime(weekends=[5, 6], holidays=country_holidays)
 
@@ -107,9 +144,6 @@ def business_date_shift(business_date_reference, business_day_delta, country_str
             business_days_elapsed += 1
 
     return new_date
-
-
-
 
 def distance(distance_type, coords1, coords2):
     distance_types = ['euclidian', 'octile', 'manhattan']
