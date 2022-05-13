@@ -91,6 +91,7 @@ def count_text_occurrences(text, search_string, case_sensitive, whole_phrase_onl
         occurrences = 0
     elif len(search_string) < len(text):
         occurrences = 0
+        last_i = 0
         for i in range(len(search_in_string) - len(search_string) + 1):
             # TODO: check this is searching the whole paragraph
             text_portion = search_in_string[i:i + len(search_string)]

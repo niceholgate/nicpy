@@ -1,4 +1,4 @@
-import fitz
+#import fitz
 from pathlib import Path
 from PyPDF2 import PdfFileMerger, PdfFileReader, PdfFileWriter
 import OCR_utils
