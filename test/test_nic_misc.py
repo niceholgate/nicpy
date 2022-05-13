@@ -36,34 +36,24 @@ def test_exponential_MA():
     dt = [datetime(2020, 1, 1), datetime(2020, 1, 2)]
     data = [4.6, 7.8, 10.1]
     tau = 0.5
-    with pytest.raises(Exception) as excinfo:
-        smoothed = exponential_MA(dt, data, 0.5)
-    assert 'Must input equal length datetimes and data vectors.' == str(excinfo.value)
+    check_raises(Exception, 'Must input equal length datetimes and data vectors.', exponential_MA, dt, data, tau)
 
     # Failure if times are not sequential
     dt = [datetime(2020, 1, 1), datetime(2020, 1, 3), datetime(2020, 1, 2)]
-    with pytest.raises(Exception) as excinfo:
-        smoothed = exponential_MA(dt, data, 0.5)
-    assert 'Datetimes must be strictly increasing.' == str(excinfo.value)
+    check_raises(Exception, 'Datetimes must be strictly increasing.', exponential_MA, dt, data, tau)
 
     dt = [datetime(2020, 1, 1), datetime(2020, 1, 3), datetime(2020, 1, 3)]
-    with pytest.raises(Exception) as excinfo:
-        smoothed = exponential_MA(dt, data, 0.5)
-    assert 'Datetimes must be strictly increasing.' == str(excinfo.value)
+    check_raises(Exception, 'Datetimes must be strictly increasing.', exponential_MA, dt, data, tau)
 
     # Failure if tau is not positive
     dt = [datetime(2020, 1, 1), datetime(2020, 1, 2), datetime(2020, 1, 3)]
     tau = -0.5
-    with pytest.raises(Exception) as excinfo:
-        smoothed = exponential_MA(dt, data, 0.5)
-    assert 'tau smoothing parameter must be positive.' == str(excinfo.value)
+    check_raises(Exception, 'tau smoothing parameter must be positive.', exponential_MA, dt, data, tau)
 
     tau = 0
-    with pytest.raises(Exception) as excinfo:
-        smoothed = exponential_MA(dt, data, 0.5)
-    assert 'tau smoothing parameter must be positive.' == str(excinfo.value)
+    check_raises(Exception, 'tau smoothing parameter must be positive.', exponential_MA, dt, data, tau)
 
-    check_raises(Exception, 'tau smoothing parameter must be positive.', exponential_MA, dt, data, 0.5)
+
 
     # Check result same length as input data
     tau = 0.5

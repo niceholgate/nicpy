@@ -18,7 +18,7 @@ def set_up_mock_from_object(obj):
     return mock_object
 
 def check_raises(error_type, error_message, func, *args):
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(error_type) as excinfo:
         result = func(*args)
     assert str(excinfo.value) == error_message
 
