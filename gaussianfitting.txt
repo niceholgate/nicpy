@@ -1,0 +1,1882 @@
+from __future__ import annotations
+from abc import ABC, abstractmethod
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import patches
+import warnings
+from scipy.optimize import minimize
+from scipy.ndimage import gaussian_filter
+from typing import List, Tuple, Union, TypeVar, Generic, Optional
+
+def make_custom_slice(dims: List[int], indices: Tuple[int, ...]) -> Tuple[int, ...]:
+    """
+    Create a slice of any sub-dimension into a numpy array.
+
+    Arguments:
+        dims - Dimensions over which to grab all data
+        indices - Data indices either to ignore (if location is in dims) or otherwise to fix/slice through
+    """
+    s = list(indices).copy()
+    for dim in dims:
+        s[dim] = slice(None)      # type: ignore
+    return tuple(s)
+
+
+def rnd3(x: Union[float, List[float], np.ndarray]) -> Union[float, np.ndarray]:
+    """
+    Round to 3 decimal places for plotting purposes.
+
+    Arguments:
+        x - float, list of floats, or array of floats to round
+    """
+    return np.round(x, 3)
+
+
+def add_noise(data: np.ndarray, noise_amp: float = 2, plotting: bool = False,
+              amplitude_sign: int = 1) -> np.ndarray:
+    '''
+    Adds noise to a numeric array with peak-to-peak which is of noise_amp% of the input data peak-to-peak.
+
+    Arguments:
+        data - Data to which noise will be added
+        noise_amp - Percentage of peak-to-peak value with which to calculate noise amplitude
+        plotting - Whether to plot a before and after of a slice through the data
+        amplitude_sign - For plotting Gaussian data slices, helps locate correct extremum depending on convexity
+    '''
+    noise_n05_to_p05 = np.random.random(data.shape)-0.5
+    data_peak_to_peak = data.max() - data.min()
+    noisy = data + noise_n05_to_p05*(data_peak_to_peak*noise_amp/100)
+    if plotting:
+        plt.figure()
+        arg_extremum = data.argmin() if amplitude_sign == -1 else data.argmax()
+        extremum_loc = tuple(int(el) for el in np.unravel_index(arg_extremum, data.shape))
+        plt.plot(data[make_custom_slice([0], extremum_loc)], label='original')
+        plt.plot(noisy[make_custom_slice([0], extremum_loc)], label='noisy')
+        plt.legend()
+        plt.title('Adding Noise')
+    return noisy
+
+
+
+class FitParameters(ABC):
+    """
+    Abstract base class implementing functionality common to all derived fitting parameters classes.
+    """
+
+    @abstractmethod
+    def __init__(self, n: int):
+        if n < 1:
+            raise ValueError('n must be gt or equal 1')
+        self._n = n
+
+    @abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+    def __eq__(self, other_params: object) -> bool:
+        if not isinstance(other_params, FitParameters):
+            return NotImplemented
+        return self.approx_equality(other_params, perc_tol=0.0)
+
+    @property
+    def n(self) -> int:
+        """
+        Dimension of the data being fit to
+        """
+        return self._n
+
+    @abstractmethod
+    def approx_equality(self, other_params: FitParameters, perc_tol: float = 5.0) -> bool:
+        """
+        Test approximate equality with another parameters object of the same type.
+
+        Arguments:
+            other_params - FitParameters object of the same subclass to compare to
+            perc_tol     - Percentage tolerance within which all parameters must match
+        """
+        pass
+
+    @abstractmethod
+    def to_array(self) -> np.ndarray:
+        """
+        Returns a numpy array with parameters in the same order as the _loss() method,
+        which needs to accept an array during optimization.
+        """
+        pass
+
+    @classmethod
+    @abstractmethod
+    def from_array(cls, params_array: np.ndarray) -> FitParameters:
+        """
+        Returns a numpy array with parameters in the same order as the _loss() method,
+        which needs to accept an array during optimization.
+
+        Argument:
+            params_array - Parameters in array in same order as output by to_array() method
+        """
+        pass
+
+
+Params_co = TypeVar('Params_co', covariant=True, bound=FitParameters)
+
+
+
+class Fit(ABC, Generic[Params_co]):
+    """
+    Abstract base class implementing functionality common to all derived fitting classes.
+    """
+
+    @abstractmethod
+    def __init__(self, coords: np.ndarray, data: np.ndarray):
+
+        self._set_check_coords_data(coords, data)
+
+        # Create an empty RMSE history to be populated as the optimization proceeds
+        self._RMSE_history: List[float] = []
+
+        # Get an initial guess of the parameters and then perform fit optimisation
+        self._params = self._get_initial_parameters_guess()
+
+        # Create a array representation of the parameters (for the optimiser's use)
+        self._params_array = self.params.to_array()
+
+        # Perform the optimisation
+        self._fit()
+
+    @abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+    @property
+    def coords(self) -> np.ndarray:
+        """
+        2D coordinate array in which shorter dimensions are appended with trailing NaNs.
+        Shape is (n, m) where n is fit dimensionality, m is greatest of the lengths of the data dimensions.
+        """
+        return self._coords
+
+    @property
+    def data(self) -> np.ndarray:
+        """
+        n-dimensional, real-valued data array, dimension lengths must match amount of non-NaN coords values.
+        """
+        return self._data
+
+    @property
+    def params(self) -> Params_co:
+        """
+        The parameters defining the fit in its current state. These are updated by each
+        fit optimisation step. Can be a numpy array for simple fits,
+        or a bespoke extension of FitParameters for more complicated fits.
+        """
+        return self._params
+
+    @property
+    def RMSE_history(self) -> List[float]:
+        """
+        Root Mean Squared Error at each step of the fit optimisation.
+        """
+        return self._RMSE_history
+
+    @abstractmethod
+    def get_dist(self, coords_samples: np.ndarray) -> np.ndarray:
+        """
+        Get the fitted distribution across the specified coordinate values.
+        Arguments:
+            coords_samples - Array of coordinates across which sample the distribution.
+        """
+        pass
+
+    @staticmethod
+    def coords_lists_to_array(coords: List[Optional[np.ndarray]]) -> np.ndarray:
+        """
+        Converts a list of coordinate arrays (one for each dimension of the data, and of length
+        matching that dimension's data length) into a 2D coordinate array in which shorter dimensions
+        are appended with trailing NaNs.
+        """
+        longest_dim = max([c.shape[0] for c in coords if c is not None])
+        n = len(coords)
+        arr = np.full((longest_dim, n), np.nan)
+        for i, c in enumerate(coords):
+            if c is not None:
+                arr[:len(c), i] = c
+        return arr
+
+    def _set_check_coords_data(self, coords: np.ndarray, data: np.ndarray):
+        """
+        Check coords and data have correct dimensions and each dimension matching data lengths.
+        """
+        self._coords = coords.squeeze()
+        self._data = data
+
+        n = len(self.data.shape)
+
+        # If the coords array does not have a second index, give it one then flatten later
+        if len(self.coords.shape) == 1:
+            self._coords = np.array([self.coords]).T
+        if n != self.coords.shape[1]:
+            raise ValueError('Specified data is {}-dimensional but {} coordinate dimensions were specified'.format(n, len(self.coords)))
+        for dim in range(n):
+            coords_dim = self.coords[:, dim]
+            coords_not_nan = coords_dim[~np.isnan(coords_dim)]
+            if self.data.shape[dim] != coords_not_nan.shape[0]:
+                raise ValueError('Dimension index {} has {} entries but the corresponding coordinates have {} entries'.format(dim, self.data.shape[dim], self.coords[dim].shape[0]))
+
+        # Flatten the coords array if it was given an artificial second index of length 1
+        if self.coords.shape[1] == 1:
+            self._coords = self._coords.flatten()
+
+    def _fit(self) -> None:
+        """
+        Conduct fitting optimisation.
+        """
+
+        # Fit to the supplied data, ignoring warnings about attempts to leave the parameter bounds
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='Values in x were outside bounds during a minimize step, clipping to bounds')
+            # warnings.filterwarnings("ignore", category=RuntimeWarning)
+            res = minimize(self._loss, self._params_array, method='SLSQP', bounds=self._get_param_bounds(), options={'ftol': 0.000001})
+
+    def _calc_RMSE(self) -> float:
+        """
+        Calculate the Root-Mean-Square Error of current fit and append it to the RMSE history.
+        """
+        # Generate the fitted distribution
+        fit_dist = self.get_dist(self.coords)
+
+        # Calculate the RMSE and add it to the tracked history
+        n_elements = np.prod(self.data.shape)
+        err = np.sqrt(np.sum((fit_dist - self.data)**2)/n_elements)
+        self._RMSE_history.append(err)
+
+        return err
+
+    def _convergence_plot(self, ax: plt.axis):
+        """
+        Plot convergence history on specified axis.
+
+        Arguments:
+            ax - The axis handle on which to plot.
+        """
+        plt.plot(range(len(self.RMSE_history)), self.RMSE_history, color='k', lw=3)
+        plt.title('Convergence - RMSE history', fontweight='bold')
+        plt.xlabel('Iterations')
+        plt.ylabel('RMSE')
+        ax.set_ylim([0, self.RMSE_history[0]*2])
+        ax.set_xlim([0, len(self.RMSE_history)])
+        last = self.RMSE_history[-1]
+        plt.plot([0, len(self.RMSE_history)], [last, last], 'r:', lw=2, label='Final RMSE = {}'.format(rnd3(last)))
+        ax.legend()
+
+    def _get_default_sample(self, axis: int, elements: int) -> np.ndarray:
+        """
+        Get a default sample along for plotting along the specified axis which extends slightly
+        beyond its bounds and with the specified number of elements.
+        """
+        coords_vector = self.coords[:self.data.shape[axis], axis]
+        data_range = coords_vector[-1] - coords_vector[0]
+        return np.linspace(coords_vector[0] - data_range*0.2, coords_vector[-1] + data_range*0.2, num=elements, endpoint=True)
+
+    @abstractmethod
+    def _get_initial_parameters_guess(self) -> Params_co:
+        """
+        Calculate initial parameter guess.
+        """
+        pass
+
+    @abstractmethod
+    def _get_param_bounds(self) -> List[Tuple[float, float]]:
+        """
+        Returns a list of 2-tuples which bound the optimiser search space for each parameter.
+        The bounds are returned in the same parameter order as the parameter array.
+        """
+        pass
+
+    @abstractmethod
+    def _loss(self, params_array: np.ndarray) -> float:
+        """
+        Called by the optimizer at each step to calculate the current RMSE of the fit to the raw data.
+        Arguments:
+            - params_array - Array of correctly ordered parameters used to define the fitting function at its present iteration
+        """
+        pass
+
+
+class GaussianFitParameters(FitParameters):
+    """
+    Parameters for defining an n-dimensional Gaussian.
+    """
+    # High correlation prohibited since leads to numerical errors
+    RHO_UPPER_LIMIT = 0.7
+    RHO_LOWER_LIMIT = -RHO_UPPER_LIMIT
+
+    def __init__(self,
+                 n: int = 1,
+                 mean: np.ndarray = np.array([0.0]),
+                 std: np.ndarray = np.array([1.0]),
+                 rho: np.ndarray = np.array([1.0]),
+                 amp: float = 1/np.sqrt(2*np.pi),
+                 offset: float = 0.0):
+        """
+        Arguments:
+            n       - The dimensionality of the Gaussian
+            mean    - The means of each dimension
+            std     - The standard deviations of each dimension
+            rho     - The correlation matrix, can be built with rhos_list_to_correlation_matrix static method
+            amp     - The amplitude of the Gaussian
+            offset  - An offset to apply to the entire Gaussian function
+        """
+        super().__init__(n)
+
+        # Check the lengths of the means, stds
+        if len(mean) != n:
+            raise ValueError('Must supply list of means equal to n')
+        if len(std) != n:
+            raise ValueError('Must supply list of stds equal to n')
+
+        # Check the shape of the correlation matrix (rho)
+        if len(rho.shape) != 2:
+            raise ValueError('Correlation matrix must be n by n')
+        if rho.shape[0] != n or rho.shape[1] != n:
+            raise ValueError('Correlation matrix must be n by n')
+
+        # Check diagonals all 1.0
+        for i in range(n):
+            if rho[i, i] != 1.0:
+                raise ValueError('Correlation matrix diagonal elements must all be 1')
+
+        # Check symmetry and rho values in bounds
+        for i in range(n):
+            for j in range(i+1, n):
+                if rho[i, j] != rho[j, i] or not (self.RHO_LOWER_LIMIT < rho[i, j] < self.RHO_UPPER_LIMIT):
+                    raise ValueError('Correlation matrix must be symmetrical and all off-diagonal values between {} and {}'
+                                     .format(self.RHO_LOWER_LIMIT, self.RHO_UPPER_LIMIT))
+
+        self._mean = mean
+        self._std = std
+        self._rho = rho
+        self._amp = amp
+        self._offset = offset
+
+        # Set the covariance matrix and covariance matrix inverse
+        self._cov_mat = self._create_covariance_matrix()
+        self._cov_mat_inv = np.linalg.inv(self._cov_mat)
+
+        # Do not calculate eigenvectors unless they are requested via the cov_mat_eigenvectors property
+        self._cov_mat_eigenvalues = np.array([])
+        self._cov_mat_eigenvectors = np.array([])
+
+    def __repr__(self) -> str:
+        string = '$\mu$ = {}\n$\sigma$ = {}\n${}$ = {}\namplitude = {}\noffset = {}'.format(
+            rnd3(self.mean), rnd3(self.std), r'\rho', rnd3(self.rhos_list), rnd3(self.amp), rnd3(self.offset))
+        return string
+
+    @property
+    def mean(self) -> np.ndarray:
+        """
+        Means of distribution, shape (1,n).
+        """
+        return self._mean
+
+    @property
+    def std(self) -> np.ndarray:
+        """
+        Standard deviations of distribution, shape (1,n).
+        """
+        return self._std
+
+    @property
+    def n_rhos(self) -> int:
+        """
+        Number of correlation coefficients needed to define the distribution of dimension n.
+        """
+        return int(self.n*(self.n - 1)/2)
+
+    @property
+    def rho(self) -> np.ndarray:
+        """
+        Correlation matrix of distribution, shape (n,n).
+        """
+        return self._rho
+
+    @property
+    def rhos_list(self) -> List[float]:
+        """
+        Build list of rhos by travelling along rows (top to bottom) in upper right diagonal of correlation matrix.
+        """
+        rhos = []
+        for i in range(self._n):
+            for j in range(i+1, self._n):
+                rhos.append(self._rho[i, j])
+        return rhos
+
+    @property
+    def amp(self) -> float:
+        """
+        Ampilitude (min to max) of distribution.
+        """
+        return self._amp
+
+    @property
+    def offset(self) -> float:
+        """
+        Offset (asymptote) of distribution.
+        """
+        return self._offset
+
+    @property
+    def cov_mat(self) -> np.ndarray:
+        """
+        Covariance matrix of distribution, shape (n,n).
+        """
+        return self._cov_mat
+
+    @property
+    def cov_mat_inv(self) -> np.ndarray:
+        """
+        Inverse of covariance matrix of distribution, shape (n,n).
+        """
+        return self._cov_mat_inv
+
+    @property
+    def cov_mat_eigenvectors(self) -> np.ndarray:
+        """
+        Covariance matrix eigenvectors (columns), shape (n,n).
+        These orthogonal vectors define the principal axes of the isosurface hyperellipsoids.
+        """
+        if self._cov_mat_eigenvectors.shape == (0,):
+            self._calculate_cov_mat_eigenvectors()
+        return self._cov_mat_eigenvectors
+
+    def approx_equality(self, other_params: FitParameters, perc_tol: float = 5.0) -> bool:
+        if not isinstance(other_params, GaussianFitParameters):
+            return NotImplemented
+        tol = perc_tol/100
+        conditions = [self.n == other_params.n,                                         # Identical dimensions
+                      (np.abs((self.mean - other_params.mean)/self.mean) <= tol).all(), # Means within perc_tol
+                      (np.abs((self.std - other_params.std)/self.std) <= tol).all(),    # Stds within perc_tol
+                      (np.abs((self.rho - other_params.rho)/self.rho) <= tol).all(),    # Rhos within perc_tol
+                      np.abs((self.amp - other_params.amp)/self.amp) <= tol,            # Amplitude within perc_tol
+                      np.abs((self.offset - other_params.offset)/self.offset) <= tol]   # Offset within perc_tol
+
+        return all(conditions)
+
+    def to_array(self) -> np.ndarray:
+        all_params = list(self._mean) + list(self._std) + self.rhos_list + [self._amp] + [self._offset]
+        return np.array(all_params)
+
+    @classmethod
+    def from_array(cls, params_array: np.ndarray) -> GaussianFitParameters:
+        # Find the fit dimension implied by the length of the array
+        #   (means + stds +   rhos    + amp + offset)
+        # = (  n   +  n   +  n(n-1)/2 +  1  +    1  )
+        # = ( 2n + n_rhos + 2 )
+        params_length = len(params_array)
+        n, n_rhos, implied_len = 0, 0, 0
+        while implied_len < params_length:
+            n += 1
+            n_rhos = int(n*(n - 1)/2)
+            implied_len = 2*n + n_rhos + 2
+            if implied_len > params_length:
+                raise Exception('Invalid params_array length.')
+        mean = params_array[:n]
+        std = params_array[n:2*n]
+        rho = params_array[2*n:2*n + n_rhos]
+        amp = params_array[2*n + n_rhos]
+        offset = params_array[2*n + n_rhos+1]
+
+        return cls(n, mean, std, cls.rhos_list_to_correlation_matrix(rho, n), amp, offset)
+
+    def projected_eigenvector(self, vec_i: int, proj_axes: Tuple[int, ...]) -> np.ndarray:
+        """
+        Project an eigenvector down onto a reduced set of axes (set the other coordinates to zero).
+
+        Arguments:
+            vec_i - Index of the eigenvector to project
+            proj_axes - Indices of plane on which to project
+        """
+        eig_vecs = self.cov_mat_eigenvectors
+        proj_vec = np.zeros(eig_vecs.shape[0])
+        proj_vec.put(proj_axes, [eig_vecs[ax, vec_i] for ax in proj_axes])
+        return proj_vec
+
+    def projected_eigenvector_unrotated(self, vec_i: int, proj_axes: Tuple[int, ...]) -> np.ndarray:
+        """
+        Get a projected eigenvector that would exist in a corresponding zero-correlation distribution.
+
+        Arguments:
+            vec_i - Index of the eigenvector to project
+            proj_axes - Indices of plane on which to project
+        """
+        cov_mat_diag_only = np.zeros(self._rho.shape)
+        np.fill_diagonal(cov_mat_diag_only, self._std**2)
+
+        eig_vecs = np.linalg.eig(cov_mat_diag_only)[1]
+        proj_vec = np.zeros(eig_vecs.shape[0])
+        proj_vec.put(proj_axes, [eig_vecs[ax, vec_i] for ax in proj_axes])
+        return proj_vec
+
+    def angle_in_planar_projection(self, plane_axes: Tuple[int, int], first_axis: bool = True) -> float:
+        """
+        Find the rotation angle of the hyperellipsoid (one of two plane axis eigenvectors projected down onto a given plane).
+
+        Arguments:
+            planes_axes - Indices of plane on which to project
+            first_axis - Which of the two relevant eigenvectors to project onto plane in angle calculation
+        """
+        proj_vec = self.projected_eigenvector(plane_axes[0 if first_axis else 1], plane_axes)
+        proj_vec_unrotated = self.projected_eigenvector_unrotated(plane_axes[0 if first_axis else 1], plane_axes)
+        cos_theta = np.dot(proj_vec, proj_vec_unrotated)/np.linalg.norm(proj_vec)/np.linalg.norm(proj_vec_unrotated)
+        theta = np.arccos(cos_theta)
+        # Reverse the vector if it makes an obtuse angle with the unrotated equivalent
+        if theta > np.pi/2:
+            proj_vec = -proj_vec
+            cos_theta = np.dot(proj_vec, proj_vec_unrotated)/np.linalg.norm(proj_vec)/np.linalg.norm(proj_vec_unrotated)
+            theta = np.arccos(cos_theta)
+
+        return theta
+
+    @staticmethod
+    def rhos_list_to_correlation_matrix(rhos: Union[List[float], np.ndarray], n: int) -> np.ndarray:
+        """
+        Build correlation matrix from list of rhos
+        (assumed to be taken along rows of upper right diagonal of the correlation matrix).
+
+        Arguments:
+            rhos - List of correlation coefficients (-1 < rho < 1) assumed to be in correct order
+            n - Expected dimensionality of the Gaussian distribution, for checking length of rhos list
+        """
+        # Check valid dimensionality
+        if n < 1:
+            raise ValueError('n must be gt or equal 1')
+
+        # Check that the correct number of rhos have been supplied for specified dimension of fit
+        n_rhos_expected = sum(range(n)) # n*(n-1)/2
+        if len(rhos) != n_rhos_expected:
+            raise ValueError('n = {} implies {} rho values, but {} were provided'.format(n, n_rhos_expected, len(rhos)))
+
+        # Build correlation matrix
+        corr_mat = np.zeros([n, n])
+
+        k = 0
+        for i in range(n):
+            for j in range(i+1, n):
+                corr_mat[i, j] = rhos[k]
+                k += 1
+
+        corr_mat = corr_mat + corr_mat.T
+        np.fill_diagonal(corr_mat, 1.0)
+
+        return corr_mat
+
+    def _calculate_cov_mat_eigenvectors(self):
+        """
+        Populate the eigenvalues/vectors private members if requested.
+        """
+        self._cov_mat_eigenvalues, self._cov_mat_eigenvectors = np.linalg.eig(self.cov_mat)
+
+    def _create_covariance_matrix(self) -> np.ndarray:
+        """
+        Build correlation matrix from list of rhos
+        (assumed to be taken along rows of upper right diagonal of the correlation matrix).
+        """
+        cov_mat = np.zeros(self._rho.shape)
+
+        # Create off-diagonal terms
+        for i in range(self._n):
+            for j in range(i+1, self._n):
+                cov_mat[i, j] = self._rho[i, j]*self._std[i]*self._std[j]
+        cov_mat = cov_mat + cov_mat.T
+
+        # Add diagonal terms
+        np.fill_diagonal(cov_mat, self._std**2)
+
+        return cov_mat
+
+
+class GaussianFit(Fit[GaussianFitParameters]):
+    """
+    Conducts an n-dimensional Gaussian fit to an n-dimensional data array.
+    User specifies n 1D coordinate data arrays (of lengths matching the n-dimensional data values)
+    at object creation, then can access converged Gaussian parameters, RMSE convergence history, FWHM, min, max, half-max and
+    the distribution at specified coordinates. Plots of 1D, 2D, and 3D slices also available.
+    """
+
+    def __init__(self, coords: np.ndarray, data: np.ndarray, amplitude_sign: Optional[int] = None):
+        """
+        Arguments:
+            coords -
+                2D coordinate array in which shorter dimensions are appended with trailing NaNs.
+                Shape is (n, m) where n is fit dimensionality, m is greatest of the lengths of the data dimensions.
+            data   - n-dimensional array of values at coords
+            amplitude_sign - 1 or -1 to match the expected amplitude sign of the data being fit to
+        """
+        # If there is no variation across the data, cannot fit
+        if data.max() == data.min():
+            raise Exception('Zero amplitude data.')
+
+        # If amplitude_sign not specified, attempt to automatically determine the amplitude sign
+        self._amplitude_sign = amplitude_sign
+        if self._amplitude_sign is None:
+            self._amplitude_sign = self._determine_amplitude_sign(coords, data)
+
+        super().__init__(coords, data)
+
+        # Calculate the FWHMs of the fit
+        self._FWHMs = self._calc_FWHMs()
+
+    def __repr__(self) -> str:
+        string = 'max = {}\nmin = {}\nhalf max = {}\nFWHMs = {}'.format(
+            rnd3(self.max), rnd3(self.min), rnd3(self.half_max), rnd3(self.FWHMs))
+        return string
+
+    @property
+    def max(self) -> float:
+        """
+        Maximum of the fitted distribution.
+        """
+        if self.params.amp >= 0:
+            return self.params.offset + self.params.amp
+        return self.params.offset
+
+    @property
+    def min(self) -> float:
+        """
+        Minimum of the fitted distribution.
+        """
+        if self.params.amp >= 0:
+            return self.params.offset
+        return self.params.offset + self.params.amp
+
+    @property
+    def half_max(self) -> float:
+        """
+        Half-max of the fitted distribution.
+        """
+        return (self.max + self.min)/2
+
+    @property
+    def FWHMs(self) -> np.ndarray:
+        """
+        Full Width at Half Maximum/Minimum values.
+        """
+        return self._FWHMs
+
+    def get_dist(self, coords_samples: np.ndarray) -> np.ndarray:
+        return self.gaussian(self.params, coords_samples)
+
+    def _get_initial_parameters_guess(self) -> GaussianFitParameters:
+        if len(self.coords.shape) == 1:
+            self._coords = np.array([self.coords]).T
+
+        n_dims = self.coords.shape[1]
+        dims = list(range(n_dims))
+        n_rhos = sum(dims)
+
+        # Find the min and max locations
+        max_loc = tuple(int(el) for el in np.unravel_index(self.data.argmax(), self.data.shape))
+        min_loc = tuple(int(el) for el in np.unravel_index(self.data.argmin(), self.data.shape))
+
+        # Find the maximum intensity
+        max_v = self.data[max_loc]
+
+        # Find the minimum intensity
+        min_v = self.data[min_loc]
+
+        # Offset
+        offset = min_v if self._amplitude_sign == 1 else max_v
+
+        # Amplitude
+        amp = max_v - min_v if self._amplitude_sign == 1 else min_v - max_v
+
+        # Estimate the means from the location of the maximum, and the standard deviations from
+        # FWHM values implied by 1D data slices through the maximum (std = FWHM/(2*sqrt(2*ln(2))) ~ FWHM/2.3548)
+        half_max = (min_v + max_v)/2
+
+        mean_estimates = []
+        std_estimates = []
+
+        for dim in dims:
+            if self._amplitude_sign == 1:
+                FWHM_exceeded_indices = np.where(self.data[make_custom_slice([dim], max_loc)] > half_max)[0]
+            else:
+                FWHM_exceeded_indices = np.where(self.data[make_custom_slice([dim], min_loc)] < half_max)[0]
+            first_idx = FWHM_exceeded_indices[0]
+            last_idx = FWHM_exceeded_indices[-1]
+            FWHM = np.abs(self.coords[last_idx, dim]-self.coords[first_idx, dim])
+            std_estimates.append(FWHM/2.3548)
+
+            if self._amplitude_sign == 1:
+                mean_estimates.append(self.coords[max_loc[dim], dim])
+            else:
+                mean_estimates.append(self.coords[min_loc[dim], dim])
+
+        # Create initial guess parameters - all calculated above except for rhos, all assumed to be 0.2
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2] * n_rhos, n_dims)
+        return GaussianFitParameters(n_dims, np.array(mean_estimates), np.array(std_estimates), rho, amp, offset)
+
+    def _get_param_bounds(self) -> List[Tuple[float, float]]:
+        mean_bounds = (-np.inf, np.inf)
+        std_bounds = (0.00001, np.inf)
+        rho_bounds = (self.params.RHO_LOWER_LIMIT+0.0001, self.params.RHO_UPPER_LIMIT-0.0001)
+        amp_bounds = (-np.inf, np.inf)
+        offset_bounds = (-np.inf, np.inf)
+
+        bounds_list = [mean_bounds]*self.params.n + [std_bounds]*self.params.n + [rho_bounds]*self.params.n_rhos + [amp_bounds] + [offset_bounds]
+
+        return bounds_list
+
+    def _loss(self, params_array: np.ndarray) -> float:
+        # Update the parameters object from the optimiser's array representation
+        self._params = GaussianFitParameters.from_array(params_array)
+
+        # Calculate the RMSE with current parameters and add it to the tracked history
+        err = self._calc_RMSE()
+
+        return err
+
+    def show_plot1D(self, along_axis: int = 0, samples: Optional[np.ndarray] = None):
+        """
+        Plot a 1D slice through the fitted distribution which also shows 1,2,3 sigma,
+        model convergence, and the details of the converged distribution.
+        Arguments:
+            along_axis - Axis along which to plot (slice through the mean)
+            samples - Optional array of coordinates of that axis along which to sample the distribution and plot
+        """
+
+        # Need an "along_axes" and "samples" tuple for _get_plotting_samples_slice method
+        along_axes = (along_axis,)
+        samples_tup = (samples,)
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, samples_tup)
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131)
+
+        # Find top and bottom of plot region
+        ydata_range = dist_slice.max() - dist_slice.min()
+        ylims = [dist_slice.min()-ydata_range*0.1, dist_slice.max()+ydata_range*0.1]
+        ax.set_ylim(ylims)
+
+        # Plot sigma regions behind fit and data
+        mean = self.params.mean[along_axis]
+        std = self.params.std[along_axis]
+
+        fwhm = self._calc_FWHM_numerical(along_axis)
+        sigma_colors = [(0.6, 0.6, 0.6, 1), (0.7, 0.7, 0.7, 1), (0.8, 0.8, 0.8, 1)]
+        for i in range(len(sigma_colors)-1, -1, -1):
+            ax.add_patch(patches.Rectangle((mean - (i+1)*std, ylims[0]), std*2*(i+1),
+                                           ylims[1]-ylims[0], color=sigma_colors[i], label=r'{}$\sigma$'.format(i+1)))
+        ax.fill_between(samples_show[0], dist_slice, self.min, color='b', alpha=0.3, zorder=9)
+        plt.plot(samples_show[0], dist_slice, label='Gaussian fit', zorder=11, color='b', lw=2)
+
+        arg_extremum = self.data.argmin() if self._amplitude_sign == -1 else self.data.argmax()
+        extremum_loc = tuple(int(el) for el in np.unravel_index(arg_extremum, self.data.shape))
+
+        plt.scatter(self.coords[:self.data.shape[along_axis], along_axis], self.data[make_custom_slice([along_axis], extremum_loc)], label='Data', zorder=12, facecolor='lightgreen', edgecolor='k')
+        plt.xlabel(str(along_axis))
+        plt.legend()
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    def show_plot2D(self, along_axes: Tuple[int, int] = (0, 1), samples: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)):
+        """
+        Plot a 2D slice through the fitted distribution which also shows
+        model convergence and the details of the converged distribution.
+
+        Arguments:
+            along_axes - Axes along which to plot (slice through the mean)
+            samples - Optional arrays of coordinates of the plotting axes along which to sample the distribution and plot
+        """
+        if self.params.n < 2:
+            raise Exception('Cannot 2D plot a 1D fit!')
+
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, samples)
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131)
+        a, b = np.meshgrid(samples[0], samples[1])
+        c = ax.contourf(b, a, dist_slice)
+        plt.xlabel(str(along_axes[0]))
+        plt.ylabel(str(along_axes[1]))
+        plt.colorbar(c)
+        ax.set_aspect('equal')
+        mean1 = self.params.mean[along_axes[0]]
+        mean2 = self.params.mean[along_axes[1]]
+
+        # Calculate projected eigenvectors
+        projected_eigenvectors = []
+        for i in range(self.params.n):
+            projected_eigenvectors.append(self.params.projected_eigenvector(i, along_axes))
+
+        # Calculate hypothetical unrotated eigenvectors
+        projected_eigenvectors_unrotated = []
+        for i in range(self.params.n):
+            projected_eigenvectors_unrotated.append(self.params.projected_eigenvector_unrotated(i, along_axes))
+
+        # Show projected eigenvectors with unrotated equivalent
+        for ax in along_axes:
+            unrot = projected_eigenvectors_unrotated[ax]
+            # unrot = unrot*(samples[0][-1]-samples[0][0])/4
+            plt.plot([mean1, mean1+unrot[along_axes[0]]],
+                     [mean2, mean2+unrot[along_axes[1]]], marker='s', c='r' if ax==along_axes[0] else 'g')
+
+            rot = projected_eigenvectors[ax]
+            # Reverse the vector if it makes an obtuse angle with the unrotated equivalent
+            if np.arccos(np.dot(rot, unrot)/np.linalg.norm(unrot)/np.linalg.norm(rot)) > np.pi/2:
+                rot = -rot
+            # rot = rot*(samples[i][-1]-samples[i][0])/4
+            plt.plot([mean1, mean1+rot[along_axes[0]]],
+                     [mean2, mean2+rot[along_axes[1]]], marker='o', c='r' if ax==along_axes[0] else 'g')
+
+        in_plane_deg_rot = 180/np.pi*self.params.angle_in_planar_projection(along_axes)
+        plt.title("In-plane rotational angle:\n{} degrees".format(in_plane_deg_rot))
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    def show_plot3D(self, along_axes: Tuple[int, int, int] = (0, 1, 2),
+                    samples: Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]] = (None, None, None)):
+        """
+        Plot a 3D slice through the fitted distribution which also shows
+        model convergence and the details of the converged distribution.
+
+        Arguments:
+            along_axes - Axes along which to plot (slice through the mean)
+            samples - Optional arrays of coordinates of the plotting axes along which to sample the distribution and plot
+        """
+        if self.params.n < 3:
+            raise Exception('Cannot 3D plot a 1D or 2D fit!')
+
+        # elements = 10 to reduce number of scatter points in 3D plot
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, samples, elements=10)
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131, projection='3d')
+        x, y, z = np.meshgrid(samples_show[0], samples_show[1], samples_show[2])
+        ax.scatter(x, y, z, c=dist_slice)
+        # If 3D fit, plot the eigenvectors
+        if self.params.n == 3:
+            eig = self.params.cov_mat_eigenvectors
+            for i in range(eig.shape[1]):
+                ax.plot([self.params.mean[0], self.params.mean[0]+eig[0, i]],
+                        [self.params.mean[1], self.params.mean[1]+eig[1, i]],
+                        [self.params.mean[2], self.params.mean[2]+eig[2, i]])
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    @staticmethod
+    def gaussian(params: GaussianFitParameters, coords_samples: np.ndarray) -> np.ndarray:
+        """
+        Generates samples from a Gaussian distribution according to the specified GaussianFitParameters,
+        across the coordinates in coords_samples.
+        Arguments:
+            - params         - Parameters defining the distribution.
+            - coords_samples - Array of coordinates across which to sample the distribution.
+        """
+
+        # Shift the coordinates by the respective means
+        shifted_samples = []
+        for i in range(len(params.mean)):
+            this_dim_coords = coords_samples[:, i]
+            this_dim_coords_non_nans = this_dim_coords[~np.isnan(this_dim_coords)]
+            shifted_samples.append(this_dim_coords_non_nans - params.mean[i])
+
+        # Generate grid of all evaluation points from coordinates
+        coords_tuple = np.meshgrid(*shifted_samples, indexing='ij')
+        coords = np.stack(coords_tuple, axis=-1)
+
+        # Tensor multiplications to find numerator of exponent
+        matmuls = np.tensordot(params.cov_mat_inv, coords.T, axes=(1, 0))
+        inner_products_step1 = coords.T * matmuls
+        inner_products_step2 = inner_products_step1.sum(axis=0)
+
+        gaussian = np.exp(inner_products_step2.T/(-2))
+
+        # Squeeze away any redundant length-1 dimensions
+        gaussian = gaussian.squeeze()
+
+        # Apply the amplitude and offset
+        return params.amp * gaussian + params.offset
+
+    def _details_plot(self, ax: plt.axis):
+        """
+        A subplot showing details of the fitted Gaussian distribution.
+
+        Arguments:
+            ax - The axis handle on which to plot.
+        """
+        ax.axis('off')
+        plt.suptitle('Fitted Gaussian for {} data points in {} dimensions'.format(np.prod(self.data.shape), self.params.n), fontweight='bold')
+        plt.text(0.1, 0.6, 'Distribution parameters:\n\n{}'.format(str(self.params)))
+        plt.text(0.1, 0.3, 'Distribution statistics:\n\n{}'.format(str(self)))
+
+    def _get_plotting_samples_slice(self, along_axes: Tuple[int, ...],
+                                    samples: Tuple[Optional[np.ndarray], ...],
+                                    elements: int = 100) -> Tuple[List[np.ndarray], np.ndarray]:
+        """
+        Construct appropriate sample coordinates (where not specified) and get the corresponding
+        fitted function values for plotting along the specified axes. The central mean is always visible.
+
+        Arguments:
+            along_axes - Tuple of axes along which plotting is desired
+            samples - Optionally specified coordinates of those axes to plot, otherwise create default coordinate range through axis mean
+            elements - Number of points at which to sample for a default coordinate range
+        """
+        samples_final = []
+        for i, along_axis in enumerate(along_axes):
+            if samples[i] is not None:
+                samples_final.append(samples[i])
+            else:
+                samples_final.append(self._get_default_sample(along_axis, elements))
+
+        through_mean = []
+        for axis in range(self.params.n):
+            if axis in along_axes:
+                through_mean.append(samples_final[along_axes.index(axis)])
+            else:
+                through_mean.append(np.array([self.params.mean[axis]]))
+
+        # Fill coord array with NaNs
+        through_mean_arr = self.coords_lists_to_array(through_mean)
+        return samples_final, self.get_dist(through_mean_arr).squeeze()   # type: ignore
+
+    def _calc_FWHMs(self) -> np.ndarray:
+        """
+        Calculate the Full Width at Half Maximum/Minimum for each axis of the converged fit.
+        """
+        FWHMs = []
+        if self.params.n < 4:
+            for dim in range(self.params.n):
+                FWHMs.append(self._calc_FWHM_analytical(dim))
+        else:
+            for dim in range(self.params.n):
+                FWHMs.append(self._calc_FWHM_numerical(dim))
+        return np.array(FWHMs)
+
+    def _calc_FWHM_analytical(self, dim: int = 0) -> float:
+        """
+        Analytical FWHM results are known for n=1,2,3.
+
+        Arguments:
+            dim - The dimension for which to calculate the FWHM
+        """
+        p = self.params
+        if dim + 1 > p.n:
+            raise ValueError('Requested dimension {} FWHM of a {}-dimensional fit'.format(dim+1, p.n))
+
+        rhos = p.rhos_list
+
+        A = 2*np.sqrt(2*np.log(2))
+        if p.n == 1:
+            return A*p.std[dim]
+        elif p.n == 2:
+            return A*p.std[dim]*np.sqrt(1-rhos[0]**2)
+        elif p.n == 3:
+            B = 1 + 2*np.prod(rhos) - np.dot(rhos, rhos)
+            S = p.std[dim]
+            C = 1 - rhos[2-dim]**2
+            return A*S*np.sqrt(B/C)
+        else:
+            raise ValueError('Current fit is {}-dimensional, and analytical FWHM results have only been implemented for n=1,2,3'.format(p.n))
+
+    def _calc_FWHM_numerical(self, dim: int = 0) -> float:
+        """
+        Binary search method closely approximates the FWHM for a given dimension of the fit,
+        can be used for fit of any total dimensionality.
+
+        Arguments:
+            dim - The dimension for which to calculate the FWHM
+        """
+        p = self.params
+        if dim + 1 > p.n:
+            raise ValueError('Requested dimension {} FWHM of a {}-dimensional fit'.format(dim+1, p.n))
+
+        vec_inner = np.zeros(p.n)
+        vec_outer = np.zeros(p.n)
+        vec_outer[dim] = p.std[dim]*3
+
+        fractional_diff_from_half_max = 1
+        new_vec = (vec_inner + vec_outer)/2
+
+        while fractional_diff_from_half_max > 0.000001:
+            new_vec = (vec_inner + vec_outer)/2
+            exp_mult = np.matmul(np.matmul(new_vec.T, p.cov_mat_inv), new_vec)
+            new_val = self.params.amp*np.exp(-(1/2)*exp_mult) + self.params.offset
+            fractional_diff_from_half_max = np.abs((new_val-self.half_max)/self.half_max)
+            if self._amplitude_sign == 1:
+                if new_val > self.half_max:
+                    vec_inner = new_vec
+                else:
+                    vec_outer = new_vec
+            else:
+                if new_val > self.half_max:
+                    vec_outer = new_vec
+                else:
+                    vec_inner = new_vec
+
+        return 2*np.sum(new_vec)
+
+    def _determine_amplitude_sign(self, coords: np.ndarray, data: np.ndarray):
+        """
+        Determine if the amplitude is +ve or -ve.
+        This is done by taking a 1D slice and assessing the positions of the argmax and argmin
+        relative to the estimated second derivative values.
+
+        +ve amp sign if the argmax occurs near -ve y'' and argmin occurs near relatively small y''
+        -ve amp sign if the argmin occurs near +ve y'' and argmax occurs near relatively small y''
+        """
+
+        # Error for constant data
+        if data.min() == data.max():
+            raise Exception('Data is constant.')
+
+        n_dims = coords.shape[1]
+        dims = list(range(n_dims))
+        central_indices = []
+        for dim in range(n_dims):
+            central_indices.append(len([el for el in coords[:, dim] if not np.isnan(el)]) // 2)
+
+        # amplitude_sign begins as None in case it cannot be determined
+        amplitude_sign = None
+
+        for dim in dims:
+            slice_1D = data[make_custom_slice([dim], tuple(central_indices))]
+
+            # Smooth away some of the noise
+            slice_1D_smoothed = gaussian_filter(slice_1D, 1)
+
+            # Calculate the first derivative and smooth some more
+            diff1 = np.diff(slice_1D_smoothed, 1)
+            diff1_smoothed = gaussian_filter(diff1, 1)
+
+            # Calculate the second derivative and smooth some more
+            diff2 = np.diff(diff1_smoothed, 1)
+            diff2_smoothed = gaussian_filter(diff2, 1)
+
+            # Find the location of the max and min in the smoothed slice
+            max_loc = min(int(np.argmax(slice_1D_smoothed)), len(diff2_smoothed)-1)
+            min_loc = min(int(np.argmin(slice_1D_smoothed)), len(diff2_smoothed)-1)
+
+            # +ve amp sign if the argmax y'' is -ve and greater in amplitude than the argmin y''
+            if diff2_smoothed[max_loc] < 0 and np.abs(diff2_smoothed[max_loc]) > np.abs(diff2_smoothed[min_loc]):
+                amplitude_sign = 1
+                break
+
+            # -ve amp sign if the argmin y'' is +ve and greater in amplitude than the argmax y''
+            if diff2_smoothed[min_loc] > 0 and np.abs(diff2_smoothed[min_loc]) > np.abs(diff2_smoothed[max_loc]):
+                amplitude_sign = -1
+                break
+
+        if amplitude_sign is None:
+            raise Exception('Could not determine the sign of the amplitude')
+
+        return amplitude_sign
+
+
+class GaussianFitParameters2p5D(FitParameters):
+    """
+    Simplifies access to parameters defining a 2p5-dimensional Gaussian.
+    """
+    def __init__(self, mean_x: float, mean_y: float, mean_z: float,
+                 std_x: float, std_y: float, std_z: float,
+                 rotation_xy: float,
+                 amp: float, offset: float):
+        """
+        Arguments:
+            mean    - The mean of the distribution
+            std     - The standard deviation of the distribution
+            rotation_xy - The rotation of the distribution in the x-y plane
+            amp     - The amplitude of the Gaussian
+            offset  - An offset to apply to the entire Gaussian function
+        """
+        super().__init__(3)
+
+        self._mean_x, self._mean_y, self._mean_z = mean_x, mean_y, mean_z
+        self._std_x, self._std_y, self._std_z = std_x, std_y, std_z
+        self._rotation_xy = rotation_xy
+        self._amp = amp
+        self._offset = offset
+
+    def __repr__(self) -> str:
+        string = '$\mu$ = {}\n$\sigma$ = {}\nrotation_xy = {}\namplitude = {}\noffset = {}'.format(
+            rnd3(self.mean), rnd3(self.std), rnd3(self.rotation_xy), rnd3(self.amp), rnd3(self.offset))
+        return string
+
+    @property
+    def mean(self) -> np.ndarray:
+        """
+        Means of the distribution.
+        """
+        return np.array([self._mean_x, self._mean_y, self._mean_z])
+
+    @property
+    def std(self) -> np.ndarray:
+        """
+        Standard deviations of the distribution.
+        """
+        return np.array([self._std_x, self._std_y, self._std_z])
+
+    @property
+    def rotation_xy(self) -> float:
+        """
+        x-y rotation of the distribution.
+        """
+        return self._rotation_xy
+
+    @property
+    def amp(self) -> float:
+        """
+        Ampilitude (min to max) of distribution.
+        """
+        return self._amp
+
+    @property
+    def offset(self) -> float:
+        """
+        Offset (asymptote) of distribution.
+        """
+        return self._offset
+
+    def approx_equality(self, other_params: FitParameters, perc_tol: float = 5.0) -> bool:
+        if not isinstance(other_params, GaussianFitParameters2p5D):
+            return NotImplemented
+        tol = perc_tol/100
+        conditions = [(np.abs((self.mean - other_params.mean)/self.mean) <= tol).all(), # Means within perc_tol
+                      (np.abs((self.std - other_params.std)/self.std) <= tol).all(),    # Stds within perc_tol
+                      np.abs((self.rotation_xy - other_params.rotation_xy)/self.rotation_xy) <= tol,    # Rhos within perc_tol
+                      np.abs((self.amp - other_params.amp)/self.amp) <= tol,            # Amplitude within perc_tol
+                      np.abs((self.offset - other_params.offset)/self.offset) <= tol]   # Offset within perc_tol
+
+        return all(conditions)
+
+    def to_array(self) -> np.ndarray:
+        return np.array([self._mean_x, self._mean_y, self._mean_z,
+                         self._std_x, self._std_y, self._std_z,
+                         self.rotation_xy, self.amp, self.offset])
+
+    @classmethod
+    def from_array(cls, params_array: np.ndarray) -> GaussianFitParameters2p5D:
+
+        if len(params_array) != 9:
+            raise Exception('Invalid params_array length - should be 9 (3 means, 3 stds, 1 rotation_xy, 1 amp, 1 offset).')
+
+        return cls(*params_array)
+
+
+class GaussianFit2p5D(Fit[GaussianFitParameters2p5D]):
+    """
+    Conducts a 2p5-dimensional Gaussian fit to input 4D data.
+    User specifies x, y, z, v 1D data arrays at object creation, then can access
+    converged Gaussian parameters, RMSE convergence history, FWHM, min, max, half-max and
+    distribution at specified vectors of x, y, z values.
+    """
+
+    def __init__(self, coords: np.ndarray, data: np.ndarray, amplitude_sign: Optional[int] = None):
+        """
+        Arguments:
+            coords -
+                2D coordinate array in which shorter dimensions are appended with trailing NaNs.
+                Shape is (3, m) where m is greatest of the lengths of the data dimensions.
+            data   - 3-dimensional array of values at coords
+            amplitude_sign - 1 or -1 to match the expected amplitude sign of the data being fit to
+        """
+        # If there is no variation across the data, cannot fit
+        if data.max() == data.min():
+            raise Exception('Zero amplitude data.')
+
+        # If amplitude_sign not specified, attempt to automatically determine the amplitude sign
+        self._amplitude_sign = amplitude_sign
+        if self._amplitude_sign is None:
+            self._amplitude_sign = self._determine_amplitude_sign(coords, data)
+
+        super().__init__(coords, data)
+
+        # Calculate the FWHMs of the fit
+        self._FWHMs = self._calc_FWHMs()
+
+    def __repr__(self) -> str:
+        string = 'max = {}\nmin = {}\nhalf max = {}\nFWHMs = {}'.format(
+            rnd3(self.max), rnd3(self.min), rnd3(self.half_max), rnd3(self.FWHMs))
+        return string
+
+    @property
+    def max(self) -> float:
+        """
+        Maximum of the fitted distribution.
+        """
+        if self.params.amp >= 0:
+            return self.params.offset + self.params.amp
+        return self.params.offset
+
+    @property
+    def min(self) -> float:
+        """
+        Minimum of the fitted distribution.
+        """
+        if self.params.amp >= 0:
+            return self.params.offset
+        return self.params.offset + self.params.amp
+
+    @property
+    def half_max(self) -> float:
+        """
+        Half-max of the fitted distribution.
+        """
+        return (self.max + self.min)/2
+
+    @property
+    def FWHMs(self) -> np.ndarray:
+        """
+        Full Width at Half Maximum/Minimum values.
+        """
+        return self._FWHMs
+
+    def get_dist(self, coords_samples: np.ndarray) -> np.ndarray:
+        return self.gaussian2p5D(self.params, coords_samples)
+
+    def _get_initial_parameters_guess(self) -> GaussianFitParameters2p5D:
+        # Find the min and max locations
+        max_loc = np.unravel_index(self.data.argmax(), self.data.shape)
+        min_loc = np.unravel_index(self.data.argmin(), self.data.shape)
+
+        # Find the maximum intensity
+        max_v = self.data[max_loc]
+
+        # Find the minimum intensity
+        min_v = self.data[min_loc]
+
+        # Offset
+        offset = min_v if self._amplitude_sign == 1 else max_v
+
+        # Amplitude
+        amp = max_v - min_v if self._amplitude_sign == 1 else min_v - max_v
+
+        # Estimate the standard deviations from FWHM values implied by 1D data slices through the maximum
+        # (std = FWHM/(2*sqrt(2*ln(2))) ~ FWHM/2.3548)
+        half_max = (min_v + max_v)/2
+
+        if self._amplitude_sign == 1:
+            FWHM_exceeded_indices = np.where(self.data[:, max_loc[1], max_loc[2]] > half_max)[0]
+        else:
+            FWHM_exceeded_indices = np.where(self.data[:, min_loc[1], min_loc[2]] < half_max)[0]
+        first_idx = FWHM_exceeded_indices[0]
+        last_idx = FWHM_exceeded_indices[-1]
+        FWHM_x = np.abs(self.coords[last_idx, 0]-self.coords[first_idx, 0])
+        std_x = FWHM_x/2.3548
+
+        if self._amplitude_sign == 1:
+            FWHM_exceeded_indices = np.where(self.data[max_loc[0], :, max_loc[2]] > half_max)[0]
+        else:
+            FWHM_exceeded_indices = np.where(self.data[min_loc[0], :, min_loc[2]] < half_max)[0]
+        first_idx = FWHM_exceeded_indices[0]
+        last_idx = FWHM_exceeded_indices[-1]
+        FWHM_y = np.abs(self.coords[last_idx, 1]-self.coords[first_idx, 1])
+        std_y = FWHM_y/2.3548
+
+        if self._amplitude_sign == 1:
+            FWHM_exceeded_indices = np.where(self.data[max_loc[0], max_loc[1], :] > half_max)[0]
+        else:
+            FWHM_exceeded_indices = np.where(self.data[min_loc[0], min_loc[1], :] < half_max)[0]
+        first_idx = FWHM_exceeded_indices[0]
+        last_idx = FWHM_exceeded_indices[-1]
+        FWHM_z = np.abs(self.coords[last_idx, 2]-self.coords[first_idx, 2])
+        std_z = FWHM_z/2.3548
+
+        # Estimate the means from the location of the extremum
+        extr_x = self.coords[max_loc[0], 0] if self._amplitude_sign == 1 else self.coords[min_loc[0], 0]
+        extr_y = self.coords[max_loc[1], 1] if self._amplitude_sign == 1 else self.coords[min_loc[1], 1]
+        extr_z = self.coords[max_loc[2], 2] if self._amplitude_sign == 1 else self.coords[min_loc[2], 2]
+
+        # Create initial guess array of parameters
+        params0 = np.array([extr_x, extr_y, extr_z, std_x, std_y, std_z, 0.1, amp, offset])
+        return GaussianFitParameters2p5D(*params0)
+
+    def _get_param_bounds(self) -> List[Tuple[float, float]]:
+        mean_bounds = (-np.inf, np.inf)
+        std_bounds = (0.0001, np.inf)
+        rotation_bounds = (-np.pi/2, np.pi/2)
+        amp_bounds = (-np.inf, np.inf)
+        offset_bounds = (-np.inf, np.inf)
+
+        bounds_list = [mean_bounds]*3 + [std_bounds]*3 + [rotation_bounds, amp_bounds, offset_bounds]
+        return bounds_list
+
+    def _loss(self, params_array: np.ndarray) -> float:
+
+        # Update the internal parameters object from the input array (necessary for optimizer)
+        self._params = GaussianFitParameters2p5D.from_array(params_array)
+
+        # Calculate the RMSE with current parameters and add it to the tracked history
+        err = self._calc_RMSE()
+
+        return err
+
+    def show_plot1D(self, along_axis: int = 0, samples: Optional[np.ndarray] = None):
+        """
+        Plot a 1D slice through the fitted distribution which also shows 1,2,3 sigma,
+        model convergence, and the details of the converged distribution.
+
+        Arguments:
+            along_axis - Axis along which to plot (slice through the mean)
+            samples - Optional array of coordinates of that axis along which to sample the distribution and plot
+        """
+
+        # Need an "along_axes" and "samples" tuple for _get_plotting_samples_slice method
+        along_axes = (along_axis,)
+        samples_tup = (samples,)
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, list(samples_tup))
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131)
+
+        # Find top and bottom of plot region
+        ydata_range = dist_slice.max() - dist_slice.min()
+        ylims = [dist_slice.min()-ydata_range*0.1, dist_slice.max()+ydata_range*0.1]
+        ax.set_ylim(ylims)
+
+        # Plot sigma regions behind fit and data
+        along_axis = along_axes[0]
+        mean = self.params.mean[along_axis]
+        std = self.params.std[along_axis]
+
+        fwhm = self.FWHMs[along_axis]
+        sigma_colors = [(0.6, 0.6, 0.6, 1), (0.7, 0.7, 0.7, 1), (0.8, 0.8, 0.8, 1)]
+        for i in range(len(sigma_colors)-1, -1, -1):
+            ax.add_patch(patches.Rectangle((mean - (i+1)*std, ylims[0]), std*2*(i+1),
+                                           ylims[1]-ylims[0], color=sigma_colors[i], label=r'{}$\sigma$'.format(i+1)))
+        ax.fill_between(samples_show[0], dist_slice, self.min, color='b', alpha=0.3, zorder=9)
+        plt.plot(samples_show[0], dist_slice, label='Gaussian fit', zorder=11, color='b', lw=2)
+
+        arg_extremum = self.data.argmin() if self._amplitude_sign == -1 else self.data.argmax()
+        extremum_loc = tuple(int(el) for el in np.unravel_index(arg_extremum, self.data.shape))
+        plt.scatter(self.coords[:, along_axis], self.data[make_custom_slice([along_axis], extremum_loc)], label='Data', zorder=12, facecolor='lightgreen', edgecolor='k')
+        plt.xlabel(str(along_axis))
+        plt.legend()
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    def show_plot2D(self, along_axes: Tuple[int, int] = (0, 1), samples: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)):
+        """
+        Plot a 2D slice through the fitted distribution which also shows
+        model convergence and the details of the converged distribution.
+        Arguments:
+            along_axes - Axes along which to plot (slice through the mean)
+            samples - Optional arrays of coordinates of the plotting axes along which to sample the distribution and plot
+        """
+        for axis in along_axes:
+            if axis > 2:
+                raise ValueError('3D fit, can only specify axes 0, 1, 2.')
+
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, list(samples))
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131)
+        a, b = np.meshgrid(samples_show[0], samples_show[1])
+        c = ax.contourf(b, a, dist_slice)
+        plt.xlabel(str(along_axes[0]))
+        plt.ylabel(str(along_axes[1]))
+        plt.colorbar(c)
+        ax.set_aspect('equal')
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    def show_plot3D(self, samples: Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]] = (None, None, None)):
+        """
+        Plot a 3D slice through the fitted distribution which also shows
+        model convergence and the details of the converged distribution.
+        Arguments:
+            along_axes - Axes along which to plot (slice through the mean)
+            samples - Optional arrays of coordinates of the plotting axes along which to sample the distribution and plot
+        """
+
+        along_axes = (0, 1, 2)
+
+        # elements = 10 to reduce number of scatter points in 3D plot
+        samples_show, dist_slice = self._get_plotting_samples_slice(along_axes, list(samples), elements=10)
+
+        plt.figure(figsize=(18, 6))
+
+        ######### Plot data with fit
+        ax = plt.subplot(131, projection='3d')
+        x, y, z = np.meshgrid(samples[0], samples[1], samples[2])
+        ax.scatter(x, y, z, c=dist_slice)
+
+        ax = plt.subplot(132)
+        self._convergence_plot(ax)
+        ax = plt.subplot(133)
+        self._details_plot(ax)
+
+        plt.show()
+
+    @staticmethod
+    def gaussian2p5D(params: GaussianFitParameters2p5D, coords_samples: np.ndarray) -> np.ndarray:
+        """
+        Generates samples from a "2.5 dimensional"'" Gaussian distribution according to the specified GaussianFitParameters2p5D,
+        across the coordinates in coords_samples.
+        Arguments:
+            - params         - Parameters defining the distribution.
+            - coords_samples - Array of coordinates across which to sample the distribution.
+        """
+
+        mx, my, mz = params.mean
+        sx, sy, sz = params.std
+        r = params.rotation_xy
+
+        if len(coords_samples.shape) == 1:
+            coords_samples = coords_samples.reshape([1, coords_samples.shape[0]])
+
+        x, y, z = np.meshgrid(coords_samples[~np.isnan(coords_samples[:, 0]), 0],
+                              coords_samples[~np.isnan(coords_samples[:, 1]), 1],
+                              coords_samples[~np.isnan(coords_samples[:, 2]), 2], indexing='ij')
+
+        X, Y = (x-mx), (y-my)
+
+        t1 = X*np.cos(r) - Y*np.sin(r)
+        t2 = X*np.sin(r) + Y*np.cos(r)
+        expXY = np.exp((-1/2)*(t1**2/sx**2 + t2**2/sy**2))
+
+        Z = (z-mz)/sz
+        expZ = np.exp((-1/2)*Z**2)
+
+        return params.amp*expXY*expZ + params.offset
+
+    def _details_plot(self, ax: plt.axis):
+        """
+        A subplot showing details of the fitted Gaussian distribution.
+
+        Arguments:
+            ax - The axis handle on which to plot.
+        """
+        ax.axis('off')
+        plt.suptitle('Fitted Gaussian (2+1)D for {} data points'.format(np.prod(self.data.shape)), fontweight='bold')
+        plt.text(0.1, 0.6, 'Distribution parameters:\n\n{}'.format(str(self.params)))
+        plt.text(0.1, 0.3, 'Distribution statistics:\n\n{}'.format(str(self)))
+
+    def _get_plotting_samples_slice(self, along_axes: Tuple[int, ...],
+                                    samples: List[Optional[np.ndarray]],
+                                    elements: int = 100) -> Tuple[List[np.ndarray], np.ndarray]:
+        """
+        Construct appropriate sample coordinates (where not specified) and get the corresponding
+        fitted function values for plotting along the specified axes. The central mean is always visible.
+
+        Arguments:
+            along_axes - Tuple of axes along which plotting is desired
+            samples - Optionally specified coordinates of those axes to plot, otherwise create default coordinate range through axis mean
+            elements - Number of points at which to sample for a default coordinate range
+        """
+        samples = list(samples)
+        ret_samples: List[np.ndarray] = []
+        for i, along_axis in enumerate(along_axes):
+            if samples[i] is not None:
+                ret_samples.append(samples[i])  # type: ignore
+            else:
+                ret_samples.append(self._get_default_sample(along_axis, elements))
+
+        through_mean = []
+        longest_dim = 0
+        for axis in range(3):
+            if axis in along_axes:
+                through_mean.append(ret_samples[along_axes.index(axis)])
+                if len(through_mean[-1]) > longest_dim:
+                    longest_dim = len(through_mean[-1])
+            else:
+                through_mean.append(np.array([self.params.mean[axis]]))
+        # Fill coord array with NaNs
+        for i in range(len(through_mean)):
+            if len(through_mean[i]) < longest_dim:
+                nan_arr = np.empty(longest_dim)
+                nan_arr.fill(float('NaN'))
+                nan_arr[:len(through_mean[i])] = through_mean[i]
+                through_mean[i] = nan_arr
+        through_mean_array = np.stack(through_mean).T # type: ignore
+        return ret_samples, self.get_dist(through_mean_array).squeeze()
+
+    def _calc_FWHMs(self) -> np.ndarray:
+        """
+        Calculate the Full Width at Half Maximum/Minimum for each axis of the converged fit.
+        """
+        FWHMs = [self._calc_FWHM_analytical(dim) for dim in range(3)]
+        return np.array(FWHMs)
+
+    def _calc_FWHM_analytical(self, axis: int) -> float:
+        """
+        Calculate the FWHM for the specified axis analytically.
+
+        Arguments:
+            axis - axis for which to calculate the FWHM
+        """
+        sx, sy, sz = self.params.std
+        r = self.params.rotation_xy
+
+        A = 2*np.sqrt(2*np.log(2))
+        if axis == 0:
+            return A*sx*sy/np.sqrt(sx**2*np.sin(r)**2 + sy**2*np.cos(r)**2)
+        elif axis == 1:
+            return A*sx*sy/np.sqrt(sy**2*np.sin(r)**2 + sx**2*np.cos(r)**2)
+        else:
+            return A*sz
+
+    def _determine_amplitude_sign(self, coords: np.ndarray, data: np.ndarray):
+        """
+        Determine if the amplitude is +ve or -ve.
+        This is done by taking a 1D slice and assessing the positions of the argmax and argmin
+        relative to the estimated second derivative values.
+
+        +ve amp sign if the argmax occurs near -ve y'' and argmin occurs near relatively small y''
+        -ve amp sign if the argmin occurs near +ve y'' and argmax occurs near relatively small y''
+        """
+
+        # Error for constant data
+        if data.min() == data.max():
+            raise Exception('Data is constant.')
+
+        n_dims = coords.shape[1]
+        dims = list(range(n_dims))
+        central_indices = []
+        for dim in range(n_dims):
+            central_indices.append(len([el for el in coords[:, dim] if not np.isnan(el)]) // 2)
+
+        # amplitude_sign begins as None in case it cannot be determined
+        amplitude_sign = None
+
+        for dim in dims:
+            slice_1D = data[make_custom_slice([dim], tuple(central_indices))]
+
+            # Smooth away some of the noise
+            slice_1D_smoothed = gaussian_filter(slice_1D, 1)
+
+            # Calculate the first derivative and smooth some more
+            diff1 = np.diff(slice_1D_smoothed, 1)
+            diff1_smoothed = gaussian_filter(diff1, 1)
+
+            # Calculate the second derivative and smooth some more
+            diff2 = np.diff(diff1_smoothed, 1)
+            diff2_smoothed = gaussian_filter(diff2, 1)
+
+            # Find the location of the max and min in the smoothed slice
+            max_loc = min(int(np.argmax(slice_1D_smoothed)), len(diff2_smoothed)-1)
+            min_loc = min(int(np.argmin(slice_1D_smoothed)), len(diff2_smoothed)-1)
+
+            # +ve amp sign if the argmax y'' is -ve and greater in amplitude than the argmin y''
+            if diff2_smoothed[max_loc] < 0 and np.abs(diff2_smoothed[max_loc]) > np.abs(diff2_smoothed[min_loc]):
+                amplitude_sign = 1
+                break
+
+            # -ve amp sign if the argmin y'' is +ve and greater in amplitude than the argmax y''
+            if diff2_smoothed[min_loc] > 0 and np.abs(diff2_smoothed[min_loc]) > np.abs(diff2_smoothed[max_loc]):
+                amplitude_sign = -1
+                break
+
+        if amplitude_sign is None:
+            raise Exception('Could not determine the sign of the amplitude')
+
+        return amplitude_sign
+
+
+
+
+
+param_tol = 0.2            # For checking quality of fits
+FWHM_tol = 0.01            # For comparing 2p5D with 3D fit
+
+
+class TestGaussianFitting:
+
+    # Test the GaussianFit class by generating some noisy Gaussian data
+    def test_GaussianFit(self):
+
+        # 1D
+        n = 1
+        mean = np.array([3.0])
+        std = np.array([1.5])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([], n)
+        amp = 3.2
+        offset = 2.1
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, 1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # 2D
+        n = 2
+        mean = np.array([3.0, 2.6])
+        std = np.array([1.5, 0.5])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.3], n)
+        amp = 2.2
+        offset = -1.4
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, 1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # 3D
+        n = 3
+        mean = np.array([1.0, 2.0, 3.0])
+        std = np.array([1.0, 1.0, 1.5])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6], n)
+        amp = 3.2
+        offset = 2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, 1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # 4D
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6, 0.4, 0.1, 0.2], n)
+        amp = 3.2
+        offset = 2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, 1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # Test coords have different lengths
+        coords = Fit.coords_lists_to_array([np.arange(-3, 3, 0.5)]*(n-1)+[np.arange(-5, 5, 0.5)])     # Different lengths
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, 1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # Test negative amplitude
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6, 0.4, 0.1, 0.2], n)
+        amp = -3.2
+        offset = -2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, -1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # Test negative correlation
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, -0.3, -0.6, 0.4, 0.1, 0.2], n)
+        amp = -3.2
+        offset = -2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, -1)
+        assert target_params.approx_equality(fit.params, 10)
+
+        # Test positive amplitude detection
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6, 0.4, 0.1, 0.2], n)
+        amp = 3.2
+        offset = -2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, None)
+        assert target_params.approx_equality(fit.params, 10)
+        assert fit._amplitude_sign == 1
+
+        # Test negative amplitude detection
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6, 0.4, 0.1, 0.2], n)
+        amp = -3.2
+        offset = -2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        data_noisy = add_noise(data)
+        fit = GaussianFit(coords, data_noisy, None)
+        assert target_params.approx_equality(fit.params, 10)
+        assert fit._amplitude_sign == -1
+
+        # Test zero amplitude (and no noise) results in an error
+        n = 4
+        mean = np.array([1.0, 2.0, 3.0, -0.47])
+        std = np.array([1.0, 1.0, 1.5, 3.1])
+        rho = GaussianFitParameters.rhos_list_to_correlation_matrix([0.2, 0.3, 0.6, 0.4, 0.1, 0.2], n)
+        amp = 0
+        offset = -2.1
+
+        target_params = GaussianFitParameters(n, mean, std, rho, amp, offset)
+
+        coords = np.stack([np.arange(-5, 5, 0.5)]*n).T
+        data = GaussianFit.gaussian(target_params, coords)
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit(coords, data, None)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit(coords, data, 1)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit(coords, data, -1)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+
+    # Test the GaussianFit2p5D class by generating some noisy Gaussian data
+    def test_GaussianFit2p5D(self):
+
+        # Positive amplitude
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.7, 0.5, 0.8, np.pi / 4, 2, 1)
+
+        coords = Fit.coords_lists_to_array([np.arange(-4, 4, 0.2)]*2+[np.arange(-4, 4, 0.1)])     # Different lengths
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+        data_noisy = add_noise(data)
+
+        fit = GaussianFit2p5D(coords, data_noisy, 1)
+
+        for target, fitted in zip(target_params.to_array(), fit.params.to_array()):
+            if target == 0.0:
+                assert np.abs(fitted) < 0.01
+            else:
+                assert 0 < np.abs((target-fitted)/target) < param_tol
+
+        # Negative amplitude
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.6, 0.5, 0.5, np.pi / 4, -2.0, 1)
+
+        coords = Fit.coords_lists_to_array([np.arange(-5, 5, 0.2)]*2+[np.arange(-3, 3, 0.1)])     # Different lengths
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+        data_noisy = add_noise(data)
+
+        fit = GaussianFit2p5D(coords, data_noisy, -1)
+
+        for target, fitted in zip(target_params.to_array(), fit.params.to_array()):
+            if target == 0.0:
+                assert np.abs(fitted) < 0.01
+            else:
+                assert 0 < np.abs((target-fitted)/target) < param_tol
+
+        # Test positive amplitude detection
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.6, 0.5, 0.5, np.pi / 4, 2.0, 1)
+
+        coords = Fit.coords_lists_to_array([np.arange(-5, 5, 0.2)]*2+[np.arange(-3, 3, 0.1)])     # Different lengths
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+        data_noisy = add_noise(data)
+
+        fit = GaussianFit2p5D(coords, data_noisy)
+
+        assert fit._amplitude_sign == 1
+        for target, fitted in zip(target_params.to_array(), fit.params.to_array()):
+            if target == 0.0:
+                assert np.abs(fitted) < 0.01
+            else:
+                assert 0 < np.abs((target-fitted)/target) < param_tol
+
+        # Test negative amplitude detection
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.6, 0.5, 0.5, np.pi / 4, -2.0, 1)
+
+        coords = Fit.coords_lists_to_array([np.arange(-5, 5, 0.2)]*2+[np.arange(-3, 3, 0.1)])     # Different lengths
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+        data_noisy = add_noise(data)
+
+        fit = GaussianFit2p5D(coords, data_noisy)
+
+        assert fit._amplitude_sign == -1
+        for target, fitted in zip(target_params.to_array(), fit.params.to_array()):
+            if target == 0.0:
+                assert np.abs(fitted) < 0.01
+            else:
+                assert 0 < np.abs((target-fitted)/target) < param_tol
+
+        # Test zero amplitude (and no noise) results in an error
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.6, 0.5, 0.5, np.pi / 4, 0, 1)
+
+        coords = Fit.coords_lists_to_array([np.arange(-5, 5, 0.2)]*2+[np.arange(-3, 3, 0.1)])     # Different lengths
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit2p5D(coords, data, None)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit2p5D(coords, data, 1)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+        with pytest.raises(Exception) as excinfo:
+            fit = GaussianFit2p5D(coords, data, -1)
+        assert 'Zero amplitude data.' in str(excinfo.value)
+
+    def test_Compare3D(self):
+
+        # GaussianFit2p5D
+        rotation = np.pi/4
+        coords = Fit.coords_lists_to_array([np.arange(-5, 5, 0.2)]*2+[np.arange(-3, 3, 0.1)])
+
+        target_params = GaussianFitParameters2p5D(0.3, 0.5, -0.5, 0.6, 0.5, 0.5, rotation, -2.0, 1)
+        data = GaussianFit2p5D.gaussian2p5D(target_params, coords)
+        data_noisy = add_noise(data)
+        fit2p5D = GaussianFit2p5D(coords, data_noisy, -1)
+
+        # 3D GaussianFit to same data
+        fit3D = GaussianFit(coords, data_noisy, -1)
+
+        # Check the x-y rotation found by the GaussianFit matches
+        assert 0 < np.abs((rotation-fit3D.params.angle_in_planar_projection((0, 1)))/rotation) < 0.01
+
+        # Check that the two sets of FWHM match
+        for i in range(3):
+            fwhm2p5D = fit2p5D.FWHMs[i]
+            fwhm3D = fit3D._calc_FWHM_numerical(i)
+            assert 0 < np.abs((fwhm2p5D-fwhm3D)/fwhm3D) < FWHM_tol
+
