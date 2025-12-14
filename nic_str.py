@@ -5,6 +5,7 @@ def ints_in_str(string):
     return int(''.join(x for x in string if x.isdigit()))
 
 
+# can just use dt.isoformat()
 def get_YYYYMMDDHHMMSS_string(datetime, connector1, connector2):
 
     YYYY, month, day = str(datetime.year), str(datetime.month), str(datetime.day)
